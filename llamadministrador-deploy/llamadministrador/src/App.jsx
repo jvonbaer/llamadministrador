@@ -66,7 +66,7 @@ const diasRest = f => { if(!f) return null; return Math.ceil((new Date(f)-new Da
 // ═══════════════════════════════════════════════════════════════════════════════
 // BACKEND — GOOGLE SHEETS SYNC
 // ═══════════════════════════════════════════════════════════════════════════════
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxrVvVX69qjBNcCUwg55-JZX8huEuJx6-F-MjgrIhu8N1lP54rh13Wk7pnXryv_sfdi7g/exec";
+const SCRIPT_URL = "/api/sheets"; // Proxy Vercel → Google Sheets
 
 // Lee todos los registros de una tabla desde Google Sheets
 async function sheetLeer(tabla) {
@@ -1874,4 +1874,5 @@ export default function LlamadministradorV5() {
     </>
   );
 }
+
 
