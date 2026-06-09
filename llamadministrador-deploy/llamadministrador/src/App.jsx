@@ -724,8 +724,6 @@ function ModuloInventario({onToast}) {
     setItems(n); await sheetEliminar("inventario",modalD.id);
     onToast("Eliminado",C.rojo); setModalD(null);
   }
-  }
-  function handleEliminar(){ const n=items.filter(i=>i.id!==modalD.id); setItems(n); persistir(n); onToast("Eliminado",C.rojo); setModalD(null); }
 
   const cats=["todos",...Array.from(new Set(items.map(i=>i.categoria)))];
   const filtrados=items.filter(i=>filtro==="todos"||i.categoria===filtro).filter(i=>!busqueda||i.nombre.toLowerCase().includes(busqueda.toLowerCase())||(i.proveedor||"").toLowerCase().includes(busqueda.toLowerCase()));
@@ -1876,3 +1874,4 @@ export default function LlamadministradorV5() {
     </>
   );
 }
+
