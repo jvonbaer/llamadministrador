@@ -470,8 +470,15 @@ function ModalMovimiento({item,tipoProp,onGuardar,onCerrar}) {
 }
 
 function ModuloFinanzas({onToast}) {
-  const { datos:movsPropios, setDatos:setMovsPropios, cargando, online } = useSheetData("finanzas", DATOS_FIN);
-  const [docsEsc,setDocsEsc] = useState([]);
+  // Estado local inmediato — sin esperar Sheets
+  const [movs, setMovs] = useState(() => {
+    try {
+      const local = localStorage.getItem("ll_finanzas");
+      const parsed = local ? JSON.parse(local) : null;
+      return parsed && parsed.length > 0 ? parsed : DATOS_FIN;
+    } catch { return DATOS_FIN; }
+  });
+  const [online, setOnline] = useState(true);
   const [tab,setTab]         = useState("resumen");
   const [filtroTipo,setFT]   = useState("todos");
   const [filtroDest,setFD]   = useState("todos");
@@ -479,42 +486,37 @@ function ModuloFinanzas({onToast}) {
   const [modalF,setModalF]   = useState(null);
   const [modalD,setModalD]   = useState(null);
 
-  useEffect(()=>{ (async()=>{
-    const docs = await sheetLeer("documentos");
-    if(docs&&docs.length>0){
-      setDocsEsc(docs.filter(d=>d.monto_total>0).map(d=>({
-        id:`esc_${d.id}`,tipo:"gasto",fecha:d.fecha||d.fecha_registro,
-        proveedor:d.proveedor||"Sin proveedor",descripcion:d.descripcion||"",
-        categoria:d.categoria||"otro",destino:d.destino||"campo_general",
-        monto_total:Number(d.monto_total)||0,monto_neto:d.monto_neto||null,
-        iva:d.iva||null,numero:d.numero||"",origen:"escaner"
-      })));
-    }
-  })(); },[]);
+  // Sync con Sheets al cargar (sin bloquear UI)
+  useEffect(()=>{
+    sheetLeer("finanzas").then(remoto=>{
+      if(remoto&&remoto.length>0){
+        setMovs(remoto);
+        localStorage.setItem("ll_finanzas",JSON.stringify(remoto));
+        setOnline(true);
+      }
+    }).catch(()=>setOnline(false));
+  },[]);
 
-  const movs=[...movsPropios,...docsEsc.filter(e=>!movsPropios.some(p=>String(p.id)===String(e.id)))];
-
-  function handleGuardar(form){
+  function guardar(form){
+    let nuevos;
     if(modalF&&typeof modalF==="object"){
-      const act={...form,id:modalF.id};
-      const nuevos=movsPropios.map(m=>String(m.id)===String(act.id)?{...m,...act}:m);
-      setMovsPropios(nuevos);
-      syncBg("finanzas",nuevos);
+      nuevos=movs.map(m=>String(m.id)===String(modalF.id)?{...m,...form}:m);
     } else {
       const nuevo={...form,id:Date.now(),origen:"manual",fecha_registro:hoy()};
-      const nuevos=[...movsPropios,nuevo];
-      setMovsPropios(nuevos);
-      syncBgGuardar("finanzas",nuevo);
-      onToast(form.tipo==="ingreso"?"Ingreso registrado ✓":"Gasto registrado ✓",form.tipo==="ingreso"?C.musgo:C.rojo);
+      nuevos=[...movs,nuevo];
     }
+    setMovs(nuevos);
+    localStorage.setItem("ll_finanzas",JSON.stringify(nuevos));
+    syncBg("finanzas",nuevos);
+    onToast(form.tipo==="ingreso"?"Ingreso registrado ✓":"Gasto registrado ✓",form.tipo==="ingreso"?C.musgo:C.rojo);
     setModalF(null);
-    onToast("Guardado ✓");
   }
-  function handleEliminar(){ 
-    const nuevos=movsPropios.filter(m=>String(m.id)!==String(modalD.id));
-    setMovsPropios(nuevos);
+  function eliminar(){
+    const nuevos=movs.filter(m=>String(m.id)!==String(modalD.id));
+    setMovs(nuevos);
+    localStorage.setItem("ll_finanzas",JSON.stringify(nuevos));
     syncBgEliminar("finanzas",modalD.id);
-    onToast("Eliminado",C.rojo); setModalD(null); 
+    onToast("Eliminado",C.rojo); setModalD(null);
   }
 
   const ahora=new Date();
@@ -531,8 +533,6 @@ function ModuloFinanzas({onToast}) {
   const datosGraf=MESES.map((mes,i)=>{ const clave=`${anioAct}-${String(i+1).padStart(2,"0")}`; return {mes,g:movs.filter(m=>m.tipo==="gasto"&&mesAnio(m.fecha)===clave).reduce((s,m)=>s+m.monto_total,0),i:movs.filter(m=>m.tipo==="ingreso"&&mesAnio(m.fecha)===clave).reduce((s,m)=>s+m.monto_total,0)}; });
   const maxG=Math.max(...datosGraf.map(d=>Math.max(d.g,d.i)),1);
   const mesIdx=ahora.getMonth();
-
-  if(cargando) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:300,fontFamily:"'Source Sans 3',sans-serif",color:C.gris}}>Cargando…</div>;
 
   return (
     <div>
@@ -632,8 +632,8 @@ function ModuloFinanzas({onToast}) {
         )}
       </div>
 
-      {modalF && <ModalMovimiento item={typeof modalF==="object"?modalF:null} tipoProp={typeof modalF==="string"?modalF:null} onGuardar={handleGuardar} onCerrar={()=>setModalF(null)}/>}
-      {modalD && <ModalEliminar nombre={modalD.proveedor} monto={`${modalD.tipo==="ingreso"?"+":"−"}${fmtM(modalD.monto_total)}`} tipo={modalD.tipo} onOk={handleEliminar} onCancel={()=>setModalD(null)}/>}
+      {modalF && <ModalMovimiento item={typeof modalF==="object"?modalF:null} tipoProp={typeof modalF==="string"?modalF:null} onGuardar={guardar} onCerrar={()=>setModalF(null)}/>}
+      {modalD && <ModalEliminar nombre={modalD.proveedor} monto={`${modalD.tipo==="ingreso"?"+":"−"}${fmtM(modalD.monto_total)}`} tipo={modalD.tipo} onOk={eliminar} onCancel={()=>setModalD(null)}/>}
     </div>
   );
 }
