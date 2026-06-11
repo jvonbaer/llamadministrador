@@ -64,115 +64,95 @@ const fmtFecha = f => { if(!f) return "—"; return new Date(f+"T12:00:00").toLo
 const diasRest = f => { if(!f) return null; return Math.ceil((new Date(f)-new Date())/86400000); };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BACKEND — GOOGLE SHEETS SYNC
 // ═══════════════════════════════════════════════════════════════════════════════
-const SCRIPT_URL = "/api/sheets"; // Proxy Vercel → Google Sheets
+// BACKEND — LOCAL FIRST + SHEETS SYNC EN BACKGROUND
+// ═══════════════════════════════════════════════════════════════════════════════
+const SCRIPT_URL = "/api/sheets";
 
-// Lee todos los registros de una tabla desde Google Sheets
+function localGuardar(tabla, datos) {
+  try { localStorage.setItem(`ll_${tabla}`, JSON.stringify(datos)); } catch {}
+}
+function localLeer(tabla) {
+  try { const r = localStorage.getItem(`ll_${tabla}`); return r ? JSON.parse(r) : null; } catch { return null; }
+}
+
 async function sheetLeer(tabla) {
   try {
-    const res = await fetch(`${SCRIPT_URL}?tabla=${tabla}`);
-    const data = await res.json();
-    if (data.ok) return data.datos;
-    console.error("sheetLeer error:", data.error);
-    return null;
-  } catch(e) {
-    console.error("sheetLeer fetch error:", e);
-    return null;
-  }
-}
-
-// Guarda un registro nuevo en Google Sheets
-async function sheetGuardar(tabla, datos) {
-  try {
-    const res = await fetch(SCRIPT_URL, {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ accion:"guardar", tabla, datos })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${SCRIPT_URL}?tabla=${tabla}`, { signal: controller.signal });
+    clearTimeout(timeout);
     const data = await res.json();
     return data.ok ? data.datos : null;
-  } catch(e) { console.error("sheetGuardar error:", e); return null; }
+  } catch { return null; }
 }
 
-// Elimina un registro por id en Google Sheets
-async function sheetEliminar(tabla, id) {
-  try {
-    const res = await fetch(SCRIPT_URL, {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ accion:"eliminar", tabla, id })
-    });
-    const data = await res.json();
-    return data.ok;
-  } catch(e) { console.error("sheetEliminar error:", e); return false; }
+function syncBg(tabla, datos) {
+  fetch(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ accion:"reemplazar", tabla, datos }) })
+  .catch(() => {});
+}
+function syncBgGuardar(tabla, item) {
+  fetch(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ accion:"guardar", tabla, datos:item }) })
+  .catch(() => {});
+}
+function syncBgEliminar(tabla, id) {
+  fetch(SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ accion:"eliminar", tabla, id }) })
+  .catch(() => {});
 }
 
-// Reemplaza todos los registros de una tabla (sync completo)
-async function sheetReemplazar(tabla, datos) {
-  try {
-    const res = await fetch(SCRIPT_URL, {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ accion:"reemplazar", tabla, datos })
-    });
-    const data = await res.json();
-    return data.ok;
-  } catch(e) { console.error("sheetReemplazar error:", e); return false; }
-}
-
-// Hook reutilizable: carga datos desde Sheets con fallback a datos de ejemplo
 function useSheetData(tabla, fallback) {
   const [datos, setDatos]       = useState([]);
   const [cargando, setCargando] = useState(true);
   const [online, setOnline]     = useState(true);
 
   useEffect(() => {
+    const local = localLeer(tabla);
+    if (local && local.length > 0) { setDatos(local); setCargando(false); }
     (async () => {
-      const resultado = await sheetLeer(tabla);
-      if (resultado !== null) {
-        setDatos(resultado.length > 0 ? resultado : fallback);
-        setOnline(true);
+      const remoto = await sheetLeer(tabla);
+      if (remoto !== null) {
+        const merged = remoto.length > 0 ? remoto : (local || fallback);
+        setDatos(merged); localGuardar(tabla, merged); setOnline(true);
       } else {
-        // Fallback: leer desde storage local
-        try {
-          const r = await window.storage.get(`${tabla}-local`, true);
-          setDatos(r ? JSON.parse(r.value) : fallback);
-        } catch { setDatos(fallback); }
         setOnline(false);
+        if (!local || local.length === 0) setDatos(fallback);
       }
       setCargando(false);
     })();
   }, []);
 
-  async function guardar(item, esNuevo) {
+  function guardar(item, esNuevo) {
+    let nuevos;
     if (esNuevo) {
       const nuevo = { ...item, id: item.id || Date.now() };
-      const guardado = await sheetGuardar(tabla, nuevo);
-      const nuevos = guardado ? [...datos, guardado] : [...datos, nuevo];
-      setDatos(nuevos);
-      if (!guardado) guardarLocal(nuevos);
-      return nuevos;
+      nuevos = [...datos, nuevo];
+      syncBgGuardar(tabla, nuevo);
     } else {
-      const actualizados = datos.map(d => String(d.id) === String(item.id) ? { ...d, ...item } : d);
-      setDatos(actualizados);
-      await sheetReemplazar(tabla, actualizados);
-      return actualizados;
+      nuevos = datos.map(d => String(d.id) === String(item.id) ? { ...d, ...item } : d);
+      syncBg(tabla, nuevos);
     }
-  }
-
-  async function eliminar(id) {
-    const nuevos = datos.filter(d => String(d.id) !== String(id));
-    setDatos(nuevos);
-    await sheetEliminar(tabla, id);
+    setDatos(nuevos); localGuardar(tabla, nuevos);
     return nuevos;
   }
 
-  async function guardarLocal(arr) {
-    try { await window.storage.set(`${tabla}-local`, JSON.stringify(arr), true); } catch {}
+  function eliminar(id) {
+    const nuevos = datos.filter(d => String(d.id) !== String(id));
+    setDatos(nuevos); localGuardar(tabla, nuevos);
+    syncBgEliminar(tabla, id);
+    return nuevos;
   }
 
   return { datos, setDatos, cargando, online, guardar, eliminar };
 }
 
-// ─── Badge de estado de conexión ─────────────────────────────────────────────
+function syncEnSegundoPlano(fn) {
+  const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),8000));
+  Promise.race([fn(),timeout]).catch(e=>console.warn("Sync Sheets (no crítico):",e.message));
+}
+
 function BadgeSync({online}) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:99,background:online?"rgba(74,94,58,0.15)":"rgba(155,58,42,0.15)"}}>
@@ -182,7 +162,6 @@ function BadgeSync({online}) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
 // COMPONENTES COMPARTIDOS
 // ═══════════════════════════════════════════════════════════════════════════════
 function Pill({label,activo,onClick,colorOn}) {
@@ -359,14 +338,14 @@ function ModuloEscaner({onToast}) {
     if(remoto&&remoto.length>0) setDocs(remoto.map(d=>({...d,monto_total:Number(d.monto_total)||0})));
   })(); },[]);
 
-  async function handleGuardar(doc){
+  function handleGuardar(doc){
     const n=[...docs,doc]; setDocs(n);
-    await sheetGuardar("documentos",doc);
+    syncBgGuardar("documentos",doc);
     onToast("Documento guardado ✓"); setArch(null); setIaData(null); setPaso("historial");
   }
-  async function handleEliminar(id){
+  function handleEliminar(id){
     const n=docs.filter(d=>d.id!==id); setDocs(n);
-    await sheetEliminar("documentos",id);
+    syncBgEliminar("documentos",id);
     onToast("Eliminado",C.rojo);
   }
   function reset(){ setArch(null); setIaData(null); setPaso("inicio"); }
@@ -491,7 +470,7 @@ function ModalMovimiento({item,tipoProp,onGuardar,onCerrar}) {
 }
 
 function ModuloFinanzas({onToast}) {
-  const { datos:movsPropios, cargando, online, guardar:guardarSheet, eliminar:eliminarSheet } = useSheetData("finanzas", DATOS_FIN);
+  const { datos:movsPropios, setDatos:setMovsPropios, cargando, online } = useSheetData("finanzas", DATOS_FIN);
   const [docsEsc,setDocsEsc] = useState([]);
   const [tab,setTab]         = useState("resumen");
   const [filtroTipo,setFT]   = useState("todos");
@@ -515,17 +494,28 @@ function ModuloFinanzas({onToast}) {
 
   const movs=[...movsPropios,...docsEsc.filter(e=>!movsPropios.some(p=>String(p.id)===String(e.id)))];
 
-  async function handleGuardar(form){
+  function handleGuardar(form){
     if(modalF&&typeof modalF==="object"){
-      await guardarSheet({...form,id:modalF.id},false);
-      onToast("Actualizado");
+      const act={...form,id:modalF.id};
+      const nuevos=movsPropios.map(m=>String(m.id)===String(act.id)?{...m,...act}:m);
+      setMovsPropios(nuevos);
+      syncBg("finanzas",nuevos);
     } else {
-      await guardarSheet({...form,id:Date.now(),origen:"manual",fecha_registro:hoy()},true);
+      const nuevo={...form,id:Date.now(),origen:"manual",fecha_registro:hoy()};
+      const nuevos=[...movsPropios,nuevo];
+      setMovsPropios(nuevos);
+      syncBgGuardar("finanzas",nuevo);
       onToast(form.tipo==="ingreso"?"Ingreso registrado ✓":"Gasto registrado ✓",form.tipo==="ingreso"?C.musgo:C.rojo);
     }
     setModalF(null);
+    onToast("Guardado ✓");
   }
-  async function handleEliminar(){ await eliminarSheet(modalD.id); onToast("Eliminado",C.rojo); setModalD(null); }
+  function handleEliminar(){ 
+    const nuevos=movsPropios.filter(m=>String(m.id)!==String(modalD.id));
+    setMovsPropios(nuevos);
+    syncBgEliminar("finanzas",modalD.id);
+    onToast("Eliminado",C.rojo); setModalD(null); 
+  }
 
   const ahora=new Date();
   const mesAct=`${ahora.getFullYear()}-${String(ahora.getMonth()+1).padStart(2,"0")}`;
@@ -712,16 +702,16 @@ function ModuloInventario({onToast}) {
     setCarg(false);
   })(); },[]);
 
-  async function handleGuardar(form){
+  function handleGuardar(form){
     const conId={...form,id:(modalF&&modalF!=="nuevo")?modalF.id:Date.now()};
     let n;
-    if(modalF&&modalF!=="nuevo"){n=items.map(i=>i.id===modalF.id?conId:i);onToast("Producto actualizado");await sheetReemplazar("inventario",n);}
-    else{n=[...items,conId];onToast("Producto agregado");await sheetGuardar("inventario",conId);}
+    if(modalF&&modalF!=="nuevo"){n=items.map(i=>i.id===modalF.id?conId:i);onToast("Producto actualizado");syncBg("inventario",n);}
+    else{n=[...items,conId];onToast("Producto agregado");syncBgGuardar("inventario",conId);}
     setItems(n); setModalF(null);
   }
-  async function handleEliminar(){
+  function handleEliminar(){
     const n=items.filter(i=>String(i.id)!==String(modalD.id));
-    setItems(n); await sheetEliminar("inventario",modalD.id);
+    setItems(n); syncBgEliminar("inventario",modalD.id);
     onToast("Eliminado",C.rojo); setModalD(null);
   }
 
@@ -966,31 +956,34 @@ function ModuloTareas({onToast}) {
 
   async function syncTareas(n){
     setTareas(n);
-    await sheetReemplazar("tareas", n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])})));
+    syncBg("tareas", n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])})));
   }
 
-  async function handleGuardar(form) {
+  function handleGuardar(form) {
     const conSub={...form,subtareas:form.subtareas||[]};
     let n;
     if(modalF&&typeof modalF==="object"){ n=tareas.map(t=>t.id===modalF.id?{...t,...conSub}:t); onToast("Tarea actualizada"); }
     else{ n=[...tareas,{...conSub,id:Date.now(),fecha_creacion:hoy()}]; onToast("Tarea creada ✓"); }
-    await syncTareas(n); setModalF(null);
+    setTareas(n); setModalF(null);
+    syncEnSegundoPlano(()=>sheetReemplazar("tareas",n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])}))));
   }
 
-  async function avanzarEstado(id) {
+  function avanzarEstado(id) {
     const orden=["pendiente","en_curso","hecha"];
     const n=tareas.map(t=>{ if(t.id!==id) return t; const idx=orden.indexOf(t.estado); const sig=orden[Math.min(idx+1,2)]; return {...t,estado:sig}; });
     const nueva=n.find(t=>t.id===id);
+    setTareas(n);
     onToast(ESTADO_CFG[nueva.estado].label, nueva.estado==="hecha"?C.musgo:C.ocre);
-    await syncTareas(n);
+    syncEnSegundoPlano(()=>sheetReemplazar("tareas",n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])}))));
   }
 
-  async function toggleSubtarea(tareaId,subId) {
+  function toggleSubtarea(tareaId,subId) {
     const n=tareas.map(t=>{ if(t.id!==tareaId) return t; return {...t,subtareas:t.subtareas.map(s=>s.id===subId?{...s,hecha:!s.hecha}:s)}; });
-    await syncTareas(n);
+    setTareas(n);
+    syncEnSegundoPlano(()=>sheetReemplazar("tareas",n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])}))));
   }
 
-  async function handleEliminar(){ const n=tareas.filter(t=>t.id!==modalD.id); await syncTareas(n); onToast("Tarea eliminada",C.rojo); setModalD(null); }
+  function handleEliminar(){ const n=tareas.filter(t=>t.id!==modalD.id); setTareas(n); onToast("Tarea eliminada",C.rojo); setModalD(null); syncEnSegundoPlano(()=>sheetReemplazar("tareas",n.map(t=>({...t,subtareas:JSON.stringify(t.subtareas||[])})))); }
 
   const tf = tareas
     .filter(t=> filtroE==="activas" ? t.estado!=="hecha" : filtroE==="hecha" ? t.estado==="hecha" : true)
@@ -1314,32 +1307,32 @@ function ModuloPersonal({onToast}) {
     setCarg(false);
   })(); },[]);
 
-  async function handleGuardarTrab(form){
+  function handleGuardarTrab(form){
     let n;
     if(modalTrab&&typeof modalTrab==="object"){
       n=trabajadores.map(t=>t.id===modalTrab.id?{...t,...form}:t);
-      onToast("Trabajador actualizado"); await sheetReemplazar("trabajadores",n);
+      onToast("Trabajador actualizado"); syncBg("trabajadores",n);
     } else {
       const nuevo={...form,id:`t_${Date.now()}`};
       n=[...trabajadores,nuevo]; onToast("Trabajador agregado ✓");
-      await sheetGuardar("trabajadores",nuevo);
+      syncBgGuardar("trabajadores",nuevo);
     }
     setTrab(n); setModalT(null);
   }
-  async function handleElimT(){
+  function handleElimT(){
     const n=trabajadores.filter(t=>t.id!==modalDT.id); setTrab(n);
-    await sheetEliminar("trabajadores",modalDT.id);
+    syncBgEliminar("trabajadores",modalDT.id);
     onToast("Eliminado",C.rojo); setModalDT(null);
   }
 
-  async function handleGuardarHH(form){
+  function handleGuardarHH(form){
     const n=[...registros,form]; setReg(n);
-    await sheetGuardar("registrosHH",form);
+    syncBgGuardar("registrosHH",form);
     onToast("Registro guardado ✓"); setModalHH(false);
   }
-  async function handleElimR(){
+  function handleElimR(){
     const n=registros.filter(r=>r.id!==modalDR.id); setReg(n);
-    await sheetEliminar("registrosHH",modalDR.id);
+    syncBgEliminar("registrosHH",modalDR.id);
     onToast("Eliminado",C.rojo); setModalDR(null);
   }
 
@@ -1520,7 +1513,7 @@ function ModuloPersonal({onToast}) {
                 </div>
                 <div style={{display:"flex",gap:8}}>
                   <button onClick={()=>setModalT(t)} style={{flex:1,padding:"7px",borderRadius:8,border:`1px solid ${C.musgo}`,color:C.musgo,background:"transparent",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"'Source Sans 3',sans-serif"}}>✏ Editar</button>
-                  <button onClick={async ()=>{ const n=trabajadores.map(w=>w.id===t.id?{...w,activo:!w.activo}:w); setTrab(n); await sheetReemplazar("trabajadores",n); }} style={{flex:1,padding:"7px",borderRadius:8,border:`1px solid ${C.ocre}`,color:C.ocre,background:"transparent",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"'Source Sans 3',sans-serif"}}>{t.activo?"Pausar":"Activar"}</button>
+                  <button onClick={async ()=>{ const n=trabajadores.map(w=>w.id===t.id?{...w,activo:!w.activo}:w); setTrab(n); syncBg("trabajadores",n); }} style={{flex:1,padding:"7px",borderRadius:8,border:`1px solid ${C.ocre}`,color:C.ocre,background:"transparent",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"'Source Sans 3',sans-serif"}}>{t.activo?"Pausar":"Activar"}</button>
                   <button onClick={()=>setModalDT(t)} style={{padding:"7px 12px",borderRadius:8,border:`1px solid ${C.rojo}`,color:C.rojo,background:"transparent",cursor:"pointer",fontSize:11,fontFamily:"'Source Sans 3',sans-serif"}}>🗑</button>
                 </div>
               </div>
@@ -1874,5 +1867,3 @@ export default function LlamadministradorV5() {
     </>
   );
 }
-
-
