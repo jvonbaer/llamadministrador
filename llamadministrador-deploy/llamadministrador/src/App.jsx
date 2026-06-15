@@ -48,7 +48,10 @@ async function loadFromSheets(tabla) {
     const r = await fetch(`${API}?tabla=${tabla}`);
     if (!r.ok) return null;
     const d = await r.json();
-    return Array.isArray(d) ? d : null;
+    // El Apps Script devuelve { ok: true, datos: [...] }
+    if (Array.isArray(d)) return d;
+    if (d?.ok && Array.isArray(d?.datos)) return d.datos;
+    return null;
   } catch { return null; }
 }
 
@@ -79,7 +82,7 @@ function useTabla(nombre) {
     setDatosRaw(prev => {
       const next = [nuevo, ...prev];
       lsSet(`ll_${nombre}`, next);
-      syncSheets("reemplazar", nombre, next);
+      syncSheets("guardar", nombre, nuevo);   // append solo el item nuevo
       return next;
     });
   }, [nombre]);
@@ -88,7 +91,7 @@ function useTabla(nombre) {
     setDatosRaw(prev => {
       const next = prev.filter(x => x.id !== id);
       lsSet(`ll_${nombre}`, next);
-      syncSheets("reemplazar", nombre, next);
+      syncSheets("eliminar", nombre, null, id); // elimina por id
       return next;
     });
   }, [nombre]);
