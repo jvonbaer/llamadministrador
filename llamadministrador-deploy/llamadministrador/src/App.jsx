@@ -985,29 +985,50 @@ function ModuloEscaner({ onExtraer }) {
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setMediaType("image/jpeg"); // siempre jpeg tras comprimir
+    setMediaType("image/jpeg");
     const reader = new FileReader();
     reader.onload = (ev) => {
-      // Comprimir imagen con canvas antes de mandar (máx 1200px, calidad 0.8)
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 1200;
-        let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-          else { width = Math.round(width * MAX / height); height = MAX; }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        const comprimida = canvas.toDataURL("image/jpeg", 0.8);
-        setPreview(comprimida);
-        setBase64(comprimida.split(",")[1]);
+      const dataUrl = ev.target.result;
+      // Intentar comprimir; si falla por cualquier motivo, usar original
+      try {
+        const img = new Image();
+        img.onerror = () => {
+          // Fallback: usar imagen sin comprimir
+          setPreview(dataUrl);
+          setBase64(dataUrl.split(",")[1]);
+          setEstado("listo");
+        };
+        img.onload = () => {
+          try {
+            const MAX = 1200;
+            let { width, height } = img;
+            if (width > MAX || height > MAX) {
+              if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+              else { width = Math.round(width * MAX / height); height = MAX; }
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+            const comprimida = canvas.toDataURL("image/jpeg", 0.8);
+            setPreview(comprimida);
+            setBase64(comprimida.split(",")[1]);
+            setEstado("listo");
+          } catch {
+            // Fallback si canvas falla
+            setPreview(dataUrl);
+            setBase64(dataUrl.split(",")[1]);
+            setEstado("listo");
+          }
+        };
+        img.src = dataUrl;
+      } catch {
+        setPreview(dataUrl);
+        setBase64(dataUrl.split(",")[1]);
         setEstado("listo");
-      };
-      img.src = ev.target.result;
+      }
     };
+    reader.onerror = () => setEstado("error");
     reader.readAsDataURL(file);
   };
 
