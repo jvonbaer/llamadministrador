@@ -460,7 +460,7 @@ function ModuloFinanzas({ datos, agregar, eliminar }) {
     <div>
       <div style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0 }}>Finanzas</h2>
-        <button style={S.btnPrimario} onClick={() => setModalAbierto(true)} style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>
+        <button onClick={() => setModalAbierto(true)} style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>
           + Registrar
         </button>
       </div>
@@ -977,10 +977,14 @@ function ModuloEscaner({ onExtraer }) {
   const [preview, setPreview] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [base64, setBase64] = useState(null);
+  const [mediaType, setMediaType] = useState("image/jpeg");
 
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    // Guardar el tipo real del archivo; si es desconocido, usar jpeg como fallback
+    const tipo = file.type && file.type.startsWith("image/") ? file.type : "image/jpeg";
+    setMediaType(tipo);
     const reader = new FileReader();
     reader.onload = (ev) => {
       const data = ev.target.result;
@@ -995,7 +999,7 @@ function ModuloEscaner({ onExtraer }) {
     if (!base64) return;
     setEstado("analizando");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1006,7 +1010,7 @@ function ModuloEscaner({ onExtraer }) {
             content: [
               {
                 type: "image",
-                source: { type: "base64", media_type: "image/jpeg", data: base64 }
+                source: { type: "base64", media_type: mediaType, data: base64 }
               },
               {
                 type: "text",
