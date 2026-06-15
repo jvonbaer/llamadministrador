@@ -96,7 +96,18 @@ function useTabla(nombre) {
     });
   }, [nombre]);
 
-  return { datos, setDatos, agregar, eliminar, cargando };
+  const recargar = useCallback(() => {
+    setCargando(true);
+    return loadFromSheets(nombre).then(remoto => {
+      if (remoto && remoto.length > 0) {
+        setDatosRaw(remoto);
+        lsSet(`ll_${nombre}`, remoto);
+      }
+      setCargando(false);
+    });
+  }, [nombre]);
+
+  return { datos, setDatos, agregar, eliminar, cargando, recargar };
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -1249,6 +1260,7 @@ const TABS = [
 export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [toast, setToast] = useState("");
+  const [recargando, setRecargando] = useState(false);
 
   const finanzas   = useTabla("finanzas");
   const inventario = useTabla("inventario");
@@ -1257,6 +1269,19 @@ export default function App() {
   const registrosHH  = useTabla("registrosHH");
 
   const showToast = (msg) => setToast(msg);
+
+  const recargarTodo = async () => {
+    setRecargando(true);
+    await Promise.all([
+      finanzas.recargar(),
+      inventario.recargar(),
+      tareas.recargar(),
+      trabajadores.recargar(),
+      registrosHH.recargar(),
+    ]);
+    setRecargando(false);
+    showToast("✅ Datos actualizados");
+  };
 
   // Wrapper para agregar con toast
   const [formularioEscaner, setFormularioEscaner] = useState(null);
@@ -1324,8 +1349,22 @@ export default function App() {
       {/* Header */}
       <div style={S.header}>
         <h1 style={S.titulo}>Llamadministrador</h1>
-        <div style={{ fontSize: 12, color: "#F5F0E8aa" }}>
-          {TABS.find(t => t.id === tab)?.label}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 12, color: "#F5F0E8aa" }}>
+            {TABS.find(t => t.id === tab)?.label}
+          </div>
+          <button
+            onClick={recargarTodo}
+            disabled={recargando}
+            title="Actualizar datos"
+            style={{
+              background: "none", border: "1.5px solid #F5F0E860", borderRadius: 8,
+              color: "#F5F0E8cc", fontSize: 16, padding: "4px 8px", cursor: recargando ? "wait" : "pointer",
+              opacity: recargando ? 0.5 : 1,
+            }}
+          >
+            {recargando ? "⏳" : "🔄"}
+          </button>
         </div>
       </div>
 
