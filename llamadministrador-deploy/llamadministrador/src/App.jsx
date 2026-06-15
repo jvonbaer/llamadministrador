@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── CONSTANTES ────────────────────────────────────────────────────────────────
 const API = "/api/sheets";
@@ -976,65 +976,38 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
 
 // ─── MÓDULO ESCÁNER ───────────────────────────────────────────────────────────
 function ModuloEscaner({ onExtraer }) {
-  const [estado, setEstado] = useState("idle");
+  const inputRef = useRef(null);
+  const [estado, setEstado] = useState("inicio"); // inicio | listo | analizando | resultado | error
   const [preview, setPreview] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [base64, setBase64] = useState(null);
-  const [mediaType, setMediaType] = useState("image/jpeg");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const abrirSelector = () => {
+    if (inputRef.current) inputRef.current.click();
+  };
 
   const handleFile = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
-    setMediaType("image/jpeg");
     const reader = new FileReader();
     reader.onload = (ev) => {
       const dataUrl = ev.target.result;
-      // Intentar comprimir; si falla por cualquier motivo, usar original
-      try {
-        const img = new Image();
-        img.onerror = () => {
-          // Fallback: usar imagen sin comprimir
-          setPreview(dataUrl);
-          setBase64(dataUrl.split(",")[1]);
-          setEstado("listo");
-        };
-        img.onload = () => {
-          try {
-            const MAX = 1200;
-            let { width, height } = img;
-            if (width > MAX || height > MAX) {
-              if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-              else { width = Math.round(width * MAX / height); height = MAX; }
-            }
-            const canvas = document.createElement("canvas");
-            canvas.width = width;
-            canvas.height = height;
-            canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-            const comprimida = canvas.toDataURL("image/jpeg", 0.8);
-            setPreview(comprimida);
-            setBase64(comprimida.split(",")[1]);
-            setEstado("listo");
-          } catch {
-            // Fallback si canvas falla
-            setPreview(dataUrl);
-            setBase64(dataUrl.split(",")[1]);
-            setEstado("listo");
-          }
-        };
-        img.src = dataUrl;
-      } catch {
-        setPreview(dataUrl);
-        setBase64(dataUrl.split(",")[1]);
-        setEstado("listo");
-      }
+      setPreview(dataUrl);
+      setBase64(dataUrl.split(",")[1]);
+      setEstado("listo");
     };
-    reader.onerror = () => setEstado("error");
+    reader.onerror = () => {
+      setErrorMsg("No se pudo leer el archivo.");
+      setEstado("error");
+    };
     reader.readAsDataURL(file);
   };
 
   const analizar = async () => {
     if (!base64) return;
     setEstado("analizando");
+    setErrorMsg("");
     try {
       const res = await fetch("/api/claude", {
         method: "POST",
@@ -1045,13 +1018,8 @@ function ModuloEscaner({ onExtraer }) {
           messages: [{
             role: "user",
             content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: mediaType, data: base64 }
-              },
-              {
-                type: "text",
-                text: `Analiza este documento (boleta, factura o recibo) y extrae los datos en formato JSON estricto, sin texto adicional, sin markdown:
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+              { type: "text", text: `Analiza este documento (boleta, factura o recibo) y extrae los datos en formato JSON estricto, sin texto adicional, sin markdown:
 {
   "tipo": "gasto" o "ingreso",
   "monto": número sin puntos ni símbolos,
@@ -1061,24 +1029,27 @@ function ModuloEscaner({ onExtraer }) {
   "categoria": "una de estas: Insumos agrícolas, Combustible, Herramientas, Maquinaria, Mano de obra, Veterinario, Alimentación animales, Cafetería, Mantenimiento, Servicios básicos, Transporte, Administrativo, Otro",
   "detalles": "cualquier información adicional relevante"
 }
-Si no puedes extraer un campo, usa null.`
-              }
+Si no puedes extraer un campo, usa null.` }
             ]
           }]
         })
       });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Error ${res.status}`);
+      }
       const data = await res.json();
       const texto = data.content?.[0]?.text || "";
       let parsed;
       try {
-        const clean = texto.replace(/```json|```/g, "").trim();
-        parsed = JSON.parse(clean);
+        parsed = JSON.parse(texto.replace(/```json|```/g, "").trim());
       } catch {
-        parsed = { error: "No se pudo parsear", raw: texto };
+        parsed = { error: "No se pudo parsear la respuesta", raw: texto };
       }
       setResultado(parsed);
       setEstado("resultado");
     } catch (err) {
+      setErrorMsg(err.message || "Error desconocido");
       setEstado("error");
     }
   };
@@ -1086,10 +1057,16 @@ Si no puedes extraer un campo, usa null.`
   const enviarAFinanzas = () => {
     if (!resultado || resultado.error) return;
     onExtraer(resultado);
-    setEstado("idle");
+    reiniciar();
+  };
+
+  const reiniciar = () => {
+    setEstado("inicio");
     setPreview(null);
     setResultado(null);
     setBase64(null);
+    setErrorMsg("");
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   return (
@@ -1100,64 +1077,101 @@ Si no puedes extraer un campo, usa null.`
           Saca foto o sube una boleta/factura y la IA extrae los datos automáticamente.
         </p>
 
-        {estado === "idle" || estado === "listo" ? (
-          <>
-            <label style={{
-              display: "block", background: "#f5f0e8", border: "2px dashed #C8852A",
-              borderRadius: 12, padding: 24, textAlign: "center", cursor: "pointer", marginBottom: 12,
-            }}>
+        {/* Input siempre en el DOM, oculto */}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleFile}
+          style={{ display: "none" }}
+        />
+
+        {/* ESTADO: inicio o listo */}
+        {(estado === "inicio" || estado === "listo") && (
+          <div>
+            <button
+              onClick={abrirSelector}
+              style={{
+                display: "block", width: "100%", background: "#f5f0e8",
+                border: "2px dashed #C8852A", borderRadius: 12, padding: 24,
+                textAlign: "center", cursor: "pointer", marginBottom: 12,
+              }}
+            >
               <div style={{ fontSize: 40, marginBottom: 8 }}>📷</div>
-              <div style={{ color: "#C8852A", fontWeight: 700 }}>Toca para subir imagen</div>
+              <div style={{ color: "#C8852A", fontWeight: 700 }}>
+                {estado === "listo" ? "Cambiar imagen" : "Toca para subir imagen"}
+              </div>
               <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Boleta, factura o recibo</div>
-              <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} />
-            </label>
+            </button>
 
             {preview && (
-              <img src={preview} alt="preview" style={{ width: "100%", borderRadius: 8, marginBottom: 12, maxHeight: 300, objectFit: "contain" }} />
+              <img src={preview} alt="preview"
+                style={{ width: "100%", borderRadius: 8, marginBottom: 12, maxHeight: 300, objectFit: "contain" }} />
             )}
 
             {estado === "listo" && (
               <button onClick={analizar} style={S.btnPrimario}>🔍 Analizar con IA</button>
             )}
-          </>
-        ) : null}
+          </div>
+        )}
 
+        {/* ESTADO: analizando */}
         {estado === "analizando" && (
           <div style={{ textAlign: "center", padding: "40px 0" }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>⏳</div>
             <div style={{ color: "#C8852A", fontWeight: 700 }}>Analizando documento…</div>
+            <div style={{ fontSize: 13, color: "#888", marginTop: 8 }}>Esto puede tomar unos segundos</div>
           </div>
         )}
 
-        {estado === "resultado" && resultado && !resultado.error && (
+        {/* ESTADO: resultado */}
+        {estado === "resultado" && resultado && (
           <div>
-            {preview && <img src={preview} alt="preview" style={{ width: "100%", borderRadius: 8, marginBottom: 12, maxHeight: 200, objectFit: "contain" }} />}
-            <div style={{ background: "#f0f7ee", borderRadius: 10, padding: 16, marginBottom: 12 }}>
-              <div style={S.cardTitulo}>Datos extraídos</div>
-              {[
-                ["Tipo", resultado.tipo],
-                ["Monto", resultado.monto ? `$${fmt(resultado.monto)}` : null],
-                ["Fecha", resultado.fecha],
-                ["Descripción", resultado.descripcion],
-                ["Proveedor", resultado.proveedor],
-                ["Categoría", resultado.categoria],
-              ].map(([k, v]) => v ? (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #ddd" }}>
-                  <span style={{ fontSize: 13, color: "#666" }}>{k}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{v}</span>
-                </div>
-              ) : null)}
-            </div>
-            <button onClick={enviarAFinanzas} style={S.btnPrimario}>✅ Enviar a Finanzas</button>
-            <button onClick={() => { setEstado("idle"); setPreview(null); setResultado(null); }}
-              style={{ ...S.btnSecundario, width: "100%", marginTop: 8 }}>Descartar</button>
+            {resultado.error ? (
+              <div style={{ background: "#fff0f0", borderRadius: 10, padding: 16, marginBottom: 12 }}>
+                <div style={{ color: "#c0392b", fontWeight: 700, marginBottom: 8 }}>⚠️ {resultado.error}</div>
+                {resultado.raw && <div style={{ fontSize: 12, color: "#888" }}>{resultado.raw}</div>}
+              </div>
+            ) : (
+              <div style={{ background: "#f0f7ee", borderRadius: 10, padding: 16, marginBottom: 12 }}>
+                <div style={S.cardTitulo}>Datos extraídos</div>
+                {[
+                  ["Tipo", resultado.tipo],
+                  ["Monto", resultado.monto ? `$${fmt(resultado.monto)}` : null],
+                  ["Fecha", resultado.fecha],
+                  ["Descripción", resultado.descripcion],
+                  ["Proveedor", resultado.proveedor],
+                  ["Categoría", resultado.categoria],
+                ].map(([k, v]) => v ? (
+                  <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #ddd" }}>
+                    <span style={{ fontSize: 13, color: "#666" }}>{k}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{v}</span>
+                  </div>
+                ) : null)}
+              </div>
+            )}
+            {!resultado.error && (
+              <button onClick={enviarAFinanzas} style={S.btnPrimario}>✅ Enviar a Finanzas</button>
+            )}
+            <button onClick={reiniciar} style={{ ...S.btnSecundario, width: "100%", marginTop: 8 }}>
+              🔄 Escanear otro documento
+            </button>
           </div>
         )}
 
+        {/* ESTADO: error */}
         {estado === "error" && (
           <div style={{ textAlign: "center", padding: "20px 0" }}>
-            <div style={{ color: "#c0392b", fontWeight: 700 }}>Error al analizar</div>
-            <button onClick={() => setEstado("listo")} style={{ ...S.btnSecundario, marginTop: 12 }}>Intentar de nuevo</button>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>⚠️</div>
+            <div style={{ color: "#c0392b", fontWeight: 700, marginBottom: 4 }}>Error al analizar</div>
+            {errorMsg && <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>{errorMsg}</div>}
+            <button onClick={abrirSelector} style={{ ...S.btnSecundario, marginTop: 4 }}>
+              Intentar con otra imagen
+            </button>
+            <button onClick={reiniciar} style={{ ...S.btnSecundario, marginTop: 8, width: "100%" }}>
+              Reiniciar
+            </button>
           </div>
         )}
       </div>
