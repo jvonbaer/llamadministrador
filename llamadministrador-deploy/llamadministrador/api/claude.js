@@ -2,6 +2,15 @@
 // La API key vive en Vercel como variable de entorno: ANTHROPIC_API_KEY
 // Nunca se expone al browser.
 
+// Aumenta el límite del body parser para aceptar imágenes grandes en base64
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "12mb",
+    },
+  },
+};
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
