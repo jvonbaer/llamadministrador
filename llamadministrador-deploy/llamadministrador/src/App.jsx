@@ -429,22 +429,42 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
 }
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
-function ModuloFinanzas({ datos, agregar, eliminar }) {
+function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiarFormulario }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [filtroTipo, setFiltroTipo] = useState("todos");
   const [filtroCentro, setFiltroCentro] = useState("todos");
   const [filtroMes, setFiltroMes] = useState(new Date().toISOString().slice(0, 7));
 
-  const [form, setForm] = useState({
-    tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "",
-  });
+  const FORM_VACIO = { tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "" };
+  const [form, setForm] = useState(FORM_VACIO);
+
+  // Si llegan datos del escáner, abrir el modal pre-llenado
+  useEffect(() => {
+    if (formularioInicial) {
+      // Validar fecha: si el año es absurdo (> año actual + 1), usar hoy
+      let fecha = formularioInicial.fecha || hoy();
+      const anio = parseInt(fecha.slice(0, 4));
+      if (anio > new Date().getFullYear() + 1 || anio < 2000) fecha = hoy();
+      setForm({
+        tipo: formularioInicial.tipo || "gasto",
+        fecha,
+        monto: formularioInicial.monto ? String(formularioInicial.monto) : "",
+        categoria: formularioInicial.categoria || "",
+        descripcion: formularioInicial.descripcion || "",
+        centro: "campo_general",
+        proveedor: formularioInicial.proveedor || "",
+      });
+      setModalAbierto(true);
+      if (onLimpiarFormulario) onLimpiarFormulario();
+    }
+  }, [formularioInicial]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const guardar = () => {
     if (!form.monto || !form.categoria) return;
     agregar({ ...form, monto: Number(form.monto) });
-    setForm({ tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "" });
+    setForm(FORM_VACIO);
     setModalAbierto(false);
   };
 
@@ -1049,7 +1069,7 @@ Si no puedes extraer un campo, usa null.` }
       setResultado(parsed);
       setEstado("resultado");
     } catch (err) {
-      setErrorMsg(err.message || "Error desconocido");
+      setErrorMsg(typeof err?.message === "string" ? err.message : JSON.stringify(err) || "Error desconocido");
       setEstado("error");
     }
   };
@@ -1202,25 +1222,18 @@ export default function App() {
   const showToast = (msg) => setToast(msg);
 
   // Wrapper para agregar con toast
+  const [formularioEscaner, setFormularioEscaner] = useState(null);
+
   const agregarConToast = (tabla, msg) => (item) => {
     tabla.agregar(item);
     showToast(msg);
   };
 
-  // Cuando el escáner extrae datos → pre-llena finanzas y va a esa tab
+  // Escáner extrae datos → abre modal de Finanzas pre-llenado para revisar antes de guardar
   const handleExtraccion = (datos) => {
-    finanzas.agregar({
-      tipo: datos.tipo || "gasto",
-      fecha: datos.fecha || hoy(),
-      monto: Number(datos.monto || 0),
-      categoria: datos.categoria || "Otro",
-      descripcion: datos.descripcion || "",
-      proveedor: datos.proveedor || "",
-      centro: "campo_general",
-      origen: "escaner",
-    });
+    setFormularioEscaner(datos);
     setTab("finanzas");
-    showToast("✅ Documento registrado en Finanzas");
+    showToast("📋 Revisa y confirma los datos extraídos");
   };
 
   const renderTab = () => {
@@ -1237,6 +1250,8 @@ export default function App() {
           datos={finanzas.datos}
           agregar={agregarConToast(finanzas, "💰 Movimiento guardado")}
           eliminar={finanzas.eliminar}
+          formularioInicial={formularioEscaner}
+          onLimpiarFormulario={() => setFormularioEscaner(null)}
         />;
       case "inventario":
         return <ModuloInventario
