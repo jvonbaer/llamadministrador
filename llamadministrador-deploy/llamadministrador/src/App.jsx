@@ -1007,21 +1007,58 @@ function ModuloEscaner({ onExtraer }) {
     if (inputRef.current) inputRef.current.click();
   };
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target.result;
-      setPreview(dataUrl);
-      setBase64(dataUrl.split(",")[1]);
-      setEstado("listo");
-    };
-    reader.onerror = () => {
-      setErrorMsg("No se pudo leer el archivo.");
+
+    // Límite duro: Vercel no acepta body > 4.5 MB
+    if (file.size > 8 * 1024 * 1024) {
+      setErrorMsg("Imagen muy grande. Toma la foto con menor resolución o usa captura de pantalla.");
       setEstado("error");
-    };
-    reader.readAsDataURL(file);
+      return;
+    }
+
+    try {
+      // createImageBitmap es más compatible con iOS (HEIC, JPEG, PNG)
+      const bitmap = await createImageBitmap(file);
+      const MAX = 900; // máx 900px → base64 resultado queda bajo 1 MB
+      let { width, height } = bitmap;
+      if (width > MAX || height > MAX) {
+        if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+        else { width = Math.round(width * MAX / height); height = MAX; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+      bitmap.close();
+      const comprimida = canvas.toDataURL("image/jpeg", 0.75);
+      // Verificar que el base64 resultante no supere 3 MB
+      if (comprimida.length > 3 * 1024 * 1024) {
+        setErrorMsg("No se pudo comprimir suficiente. Usa una captura de pantalla de la boleta.");
+        setEstado("error");
+        return;
+      }
+      setPreview(comprimida);
+      setBase64(comprimida.split(",")[1]);
+      setEstado("listo");
+    } catch {
+      // Fallback para browsers sin createImageBitmap
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target.result;
+        if (dataUrl.length > 3 * 1024 * 1024) {
+          setErrorMsg("Imagen muy grande. Usa una captura de pantalla de la boleta.");
+          setEstado("error");
+          return;
+        }
+        setPreview(dataUrl);
+        setBase64(dataUrl.split(",")[1]);
+        setEstado("listo");
+      };
+      reader.onerror = () => { setErrorMsg("No se pudo leer el archivo."); setEstado("error"); };
+      reader.readAsDataURL(file);
+    }
   };
 
   const analizar = async () => {
