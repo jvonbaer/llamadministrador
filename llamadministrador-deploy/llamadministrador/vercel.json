@@ -1,1 +1,0 @@
-﻿{"buildCommand":"npm run build","outputDirectory":"build","framework":"create-react-app","rewrites":[{"source":"/api/sheets","destination":"/api/sheets.js"},{"source":"/(.*)","destination":"/index.html"}]}
