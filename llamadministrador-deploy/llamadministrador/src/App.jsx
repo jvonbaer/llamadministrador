@@ -375,48 +375,142 @@ function Modal({ titulo, onClose, children }) {
 
 // ─── MÓDULO DASHBOARD ─────────────────────────────────────────────────────────
 function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
-  const mesActual = new Date().toISOString().slice(0, 7);
-  const movMes = finanzas.filter(f => (f.fecha || "").startsWith(mesActual));
-  const ingresos = movMes.filter(f => f.tipo === "ingreso").reduce((a, b) => a + Number(b.monto || 0), 0);
-  const gastos = movMes.filter(f => f.tipo === "gasto").reduce((a, b) => a + Number(b.monto || 0), 0);
-  const saldo = ingresos - gastos;
-  const tareasPend = tareas.filter(t => t.estado !== "completada").length;
-  const stockBajo = inventario.filter(i => Number(i.stock || 0) <= Number(i.stockMinimo || 0)).length;
+  const getMes = (off = 0) => {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - off);
+    return d.toISOString().slice(0, 7);
+  };
+  const labelMes = (ym) => {
+    const nombres = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+    return nombres[parseInt(ym.slice(5)) - 1];
+  };
+  const suma = (arr, tipo) => arr.filter(f => f.tipo === tipo).reduce((a, b) => a + Number(b.monto || 0), 0);
 
-  const ultMovs = [...finanzas]
-    .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
-    .slice(0, 5);
+  const mesAct = getMes(0); const mesAnt = getMes(1);
+  const movAct = finanzas.filter(f => (f.fecha || "").startsWith(mesAct));
+  const movAnt = finanzas.filter(f => (f.fecha || "").startsWith(mesAnt));
 
+  const ingAct = suma(movAct, "ingreso"); const gasAct = suma(movAct, "gasto");
+  const ingAnt = suma(movAnt, "ingreso"); const gasAnt = suma(movAnt, "gasto");
+  const saldo  = ingAct - gasAct;
+
+  const varPct = (a, b) => b === 0 ? null : Math.round(((a - b) / b) * 100);
+  const varIng = varPct(ingAct, ingAnt); const varGas = varPct(gasAct, gasAnt);
+
+  const meses4 = [getMes(3), getMes(2), getMes(1), getMes(0)];
+  const dm = meses4.map(m => ({
+    label: labelMes(m),
+    ing: suma(finanzas.filter(f => (f.fecha || "").startsWith(m)), "ingreso"),
+    gas: suma(finanzas.filter(f => (f.fecha || "").startsWith(m)), "gasto"),
+  }));
+  const maxV = Math.max(...dm.flatMap(d => [d.ing, d.gas]), 1);
+
+  const catMap = {};
+  movAct.filter(f => f.tipo === "gasto").forEach(f => {
+    const c = f.categoria || "Otro";
+    catMap[c] = (catMap[c] || 0) + Number(f.monto || 0);
+  });
+  const topCats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const maxCat = Math.max(...topCats.map(c => c[1]), 1);
+
+  const tareasPend = tareas.filter(t => t.estado === "pendiente").length;
+  const tareasEnC  = tareas.filter(t => t.estado === "en_progreso").length;
+  const hoyStr     = new Date().toISOString().slice(0, 10);
+  const tareasHoy  = tareas.filter(t => t.fecha_limite === hoyStr && t.estado !== "completada").length;
+
+  const stockBajo = inventario.filter(i => i.minimo && Number(i.stock || 0) <= Number(i.minimo || 0));
+  const ultMovs   = [...finanzas].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).slice(0, 5);
   const mes = new Date().toLocaleString("es-CL", { month: "long", year: "numeric" });
+
+  const Chip = ({ pct, inv = false }) => {
+    if (pct === null) return null;
+    const ok = inv ? pct < 0 : pct > 0;
+    return (
+      <span style={{ fontSize: 10, fontWeight: 700, color: ok ? "#4A5E3A" : "#c0392b",
+        background: ok ? "#eaf4e6" : "#fdecea", borderRadius: 5, padding: "1px 5px", marginLeft: 5 }}>
+        {pct > 0 ? "↑" : "↓"}{Math.abs(pct)}%
+      </span>
+    );
+  };
 
   return (
     <div>
       <p style={{ padding: "8px 16px 0", color: "#888", fontSize: 13, textTransform: "capitalize" }}>{mes}</p>
+
       <div style={S.kpiGrid}>
         <div style={S.kpiCard("#4A5E3A")}>
-          <div style={S.kpiVal}>{fmtMiles(ingresos)}</div>
-          <div style={S.kpiLabel}>Ingresos mes</div>
+          <div style={S.kpiVal}>{fmtMiles(ingAct)}</div>
+          <div style={S.kpiLabel}>Ingresos <Chip pct={varIng} /></div>
         </div>
         <div style={S.kpiCard("#c0392b")}>
-          <div style={S.kpiVal}>{fmtMiles(gastos)}</div>
-          <div style={S.kpiLabel}>Gastos mes</div>
+          <div style={S.kpiVal}>{fmtMiles(gasAct)}</div>
+          <div style={S.kpiLabel}>Gastos <Chip pct={varGas} inv /></div>
         </div>
         <div style={S.kpiCard(saldo >= 0 ? "#C8852A" : "#c0392b")}>
           <div style={S.kpiVal}>{fmtMiles(saldo)}</div>
-          <div style={S.kpiLabel}>Resultado mes</div>
+          <div style={S.kpiLabel}>Resultado</div>
         </div>
         <div style={S.kpiCard("#3D2B1F")}>
-          <div style={S.kpiVal}>{tareasPend}</div>
-          <div style={S.kpiLabel}>Tareas pendientes</div>
+          <div style={S.kpiVal}>{tareasPend + tareasEnC}</div>
+          <div style={S.kpiLabel}>
+            Tareas activas
+            {tareasHoy > 0 && <span style={{ fontSize: 9, background: "#c0392b", color: "#fff", borderRadius: 4, padding: "1px 4px", marginLeft: 4 }}>{tareasHoy} hoy</span>}
+          </div>
         </div>
       </div>
 
-      {stockBajo > 0 && (
-        <div style={{ ...S.card, background: "#fff3cd", border: "1px solid #C8852A" }}>
-          <div style={{ fontWeight: 700, color: "#C8852A" }}>⚠️ Stock bajo</div>
-          <div style={{ fontSize: 13, color: "#7a5a1e", marginTop: 4 }}>
-            {stockBajo} producto{stockBajo > 1 ? "s" : ""} bajo el mínimo en inventario.
+      {stockBajo.length > 0 && (
+        <div style={{ ...S.card, background: "#fff3cd", border: "1px solid #C8852A", padding: "10px 14px" }}>
+          <div style={{ fontWeight: 700, color: "#C8852A", fontSize: 13 }}>⚠️ Stock bajo — {stockBajo.length} producto{stockBajo.length > 1 ? "s" : ""}</div>
+          {stockBajo.map(i => (
+            <div key={i.id} style={{ fontSize: 12, color: "#7a5a1e", marginTop: 2 }}>· {i.nombre}: {i.stock} {i.unidad} (mín {i.minimo})</div>
+          ))}
+        </div>
+      )}
+
+      {finanzas.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Ingresos vs Gastos — 4 meses</div>
+          <svg viewBox="0 0 300 115" style={{ width: "100%", marginTop: 6 }}>
+            {[0.25, 0.5, 0.75, 1].map(p => (
+              <line key={p} x1="0" y1={10 + (1 - p) * 80} x2="300" y2={10 + (1 - p) * 80} stroke="#f0ece6" strokeWidth="1" />
+            ))}
+            {dm.map((d, i) => {
+              const x = 20 + i * 70;
+              const hI = (d.ing / maxV) * 80; const hG = (d.gas / maxV) * 80;
+              return (
+                <g key={i}>
+                  <rect x={x}      y={90 - hI} width={22} height={hI} fill="#4A5E3A" rx="2" />
+                  <rect x={x + 24} y={90 - hG} width={22} height={hG} fill="#c0392b" rx="2" />
+                  <text x={x + 23} y={106} textAnchor="middle" fontSize="9" fill="#888">{d.label}</text>
+                  {d.ing > 0 && <text x={x + 11} y={90 - hI - 3} textAnchor="middle" fontSize="7" fill="#4A5E3A">{fmtMiles(d.ing)}</text>}
+                  {d.gas > 0 && <text x={x + 35} y={90 - hG - 3} textAnchor="middle" fontSize="7" fill="#c0392b">{fmtMiles(d.gas)}</text>}
+                </g>
+              );
+            })}
+          </svg>
+          <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#666", marginTop: 2 }}>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#4A5E3A", borderRadius: 2, marginRight: 4 }} />Ingresos</span>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#c0392b", borderRadius: 2, marginRight: 4 }} />Gastos</span>
           </div>
+        </div>
+      )}
+
+      {topCats.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Top gastos por categoría — {labelMes(mesAct)}</div>
+          {topCats.map(([cat, val], i) => (
+            <div key={cat} style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+                <span style={{ color: "#555" }}>{cat}</span>
+                <span style={{ fontWeight: 700, color: "#c0392b" }}>${fmt(val)}</span>
+              </div>
+              <div style={{ height: 6, background: "#f0ece6", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${(val / maxCat) * 100}%`,
+                  background: i === 0 ? "#c0392b" : i === 1 ? "#C8852A" : "#7a5a1e",
+                  borderRadius: 4 }} />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -438,6 +532,8 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
     </div>
   );
 }
+
+
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
 function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiarFormulario }) {
