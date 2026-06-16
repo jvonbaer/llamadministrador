@@ -23,7 +23,27 @@ const CATEGORIAS_INGRESO = [
   "Eventos especiales","Otro",
 ];
 
-const UNIDADES = ["kg","L","unidad","saco","fardo","caja","rollo","dosis","metro"];
+// Categorías de inventario
+const CATEGORIAS_INVENTARIO = [
+  "Fertilizantes foliares","Herbicidas","Fungicidas/Bactericidas","Insecticidas",
+  "Bioestimulantes","Coadyuvantes","Adherentes","Combustibles",
+  "Herramientas","Repuestos","Semillas","Veterinario","Alimentación animales","Otros",
+];
+
+// Categorías de gasto que pueden generar un movimiento de entrada en inventario
+const CATS_INSUMO = new Set([
+  "Insumos agrícolas","Combustible","Herramientas","Veterinario","Alimentación animales",
+]);
+
+const UNIDADES = ["kg","L","unidad","saco","fardo","caja","rollo","dosis","metro","g","mL"];
+
+// Stock calculado en tiempo real desde movimientos
+const calcStock = (productoId, movs) => {
+  const propios = movs.filter(m => String(m.producto_id) === String(productoId));
+  const ent = propios.filter(m => m.tipo === "entrada").reduce((a, b) => a + Number(b.cantidad || 0), 0);
+  const sal = propios.filter(m => m.tipo === "salida").reduce((a, b) => a + Number(b.cantidad || 0), 0);
+  return ent - sal;
+};
 
 // ─── STORAGE ───────────────────────────────────────────────────────────────────
 const lsGet = (key, def = []) => {
@@ -107,7 +127,16 @@ function useTabla(nombre) {
     });
   }, [nombre]);
 
-  return { datos, setDatos, agregar, eliminar, cargando, recargar };
+  const actualizar = useCallback((item) => {
+    setDatosRaw(prev => {
+      const next = prev.map(x => x.id === item.id ? item : x);
+      lsSet(`ll_${nombre}`, next);
+      syncSheets("actualizar", nombre, item);
+      return next;
+    });
+  }, [nombre]);
+
+  return { datos, setDatos, agregar, actualizar, eliminar, cargando, recargar };
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -536,43 +565,91 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
 
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
-function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiarFormulario }) {
+function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicial, onLimpiarFormulario, inventario, agregarMovInventario }) {
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [modalInsumo, setModalInsumo] = useState(null); // datos del gasto recién guardado
+  const [itemEditando, setItemEditando] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState("todos");
   const [filtroCentro, setFiltroCentro] = useState("todos");
   const [filtroMes, setFiltroMes] = useState(new Date().toISOString().slice(0, 7));
+  const [formInsumo, setFormInsumo] = useState({ producto_id: "", es_nuevo: false, nombre: "", cantidad: "", unidad: "kg", categoria: "Fertilizantes foliares" });
 
   const FORM_VACIO = { tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "" };
   const [form, setForm] = useState(FORM_VACIO);
 
-  // Si llegan datos del escáner, abrir el modal pre-llenado
   useEffect(() => {
     if (formularioInicial) {
-      // Validar fecha: si el año es absurdo (> año actual + 1), usar hoy
       let fecha = formularioInicial.fecha || hoy();
       const anio = parseInt(fecha.slice(0, 4));
       if (anio > new Date().getFullYear() + 1 || anio < 2000) fecha = hoy();
       setForm({
-        tipo: formularioInicial.tipo || "gasto",
-        fecha,
+        tipo: formularioInicial.tipo || "gasto", fecha,
         monto: formularioInicial.monto ? String(formularioInicial.monto) : "",
         categoria: formularioInicial.categoria || "",
         descripcion: formularioInicial.descripcion || "",
         centro: "campo_general",
         proveedor: formularioInicial.proveedor || "",
       });
+      setItemEditando(null);
       setModalAbierto(true);
       if (onLimpiarFormulario) onLimpiarFormulario();
     }
   }, [formularioInicial]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setFI = (k, v) => setFormInsumo(f => ({ ...f, [k]: v }));
+
+  const abrirEditar = (item) => {
+    setItemEditando(item);
+    setForm({ tipo: item.tipo || "gasto", fecha: item.fecha || hoy(),
+      monto: String(item.monto || ""), categoria: item.categoria || "",
+      descripcion: item.descripcion || "", centro: item.centro || "campo_general",
+      proveedor: item.proveedor || "" });
+    setModalAbierto(true);
+  };
 
   const guardar = () => {
     if (!form.monto || !form.categoria) return;
-    agregar({ ...form, monto: Number(form.monto) });
+    if (itemEditando) {
+      actualizar({ ...itemEditando, ...form, monto: Number(form.monto) });
+      setItemEditando(null);
+    } else {
+      agregar({ ...form, monto: Number(form.monto) });
+      // Si es un gasto de categoría insumo → preguntar si agregar al inventario
+      if (form.tipo === "gasto" && CATS_INSUMO.has(form.categoria)) {
+        setFormInsumo({ producto_id: "", es_nuevo: false, nombre: form.descripcion || "", cantidad: "", unidad: "kg", categoria: "Fertilizantes foliares" });
+        setModalInsumo(form);
+      }
+    }
     setForm(FORM_VACIO);
     setModalAbierto(false);
+  };
+
+  const guardarInsumo = () => {
+    if (!formInsumo.cantidad) return;
+    if (formInsumo.es_nuevo || !formInsumo.producto_id) {
+      // Crear producto nuevo + movimiento entrada
+      // Usamos un ID temporal para el producto; el agregar lo asignará
+      const tempId = `inv_${Date.now()}`;
+      if (inventario) {
+        // Llamamos agregar pero necesitamos el ID — workaround: usamos timestamp
+      }
+    }
+    // Si producto existente: crear movimiento entrada
+    if (formInsumo.producto_id && !formInsumo.es_nuevo) {
+      const prod = inventario?.find(p => p.id === formInsumo.producto_id);
+      if (prod) {
+        agregarMovInventario({
+          producto_id: prod.id, producto_nombre: prod.nombre,
+          tipo: "entrada", cantidad: Number(formInsumo.cantidad),
+          unidad: prod.unidad, motivo: "compra",
+          tarea_id: null, tarea_titulo: null,
+          fecha: modalInsumo?.fecha || hoy(),
+          notas: `Desde gasto: ${modalInsumo?.descripcion || ""}`,
+        });
+      }
+    }
+    setModalInsumo(null);
   };
 
   const filtrados = datos
@@ -641,13 +718,16 @@ function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiar
               <div style={{ fontWeight: 800, fontSize: 15, color: mov.tipo === "ingreso" ? "#4A5E3A" : "#c0392b" }}>
                 {mov.tipo === "ingreso" ? "+" : "-"}${fmt(mov.monto)}
               </div>
-              <button onClick={() => eliminar(mov.id)} style={S.btnDanger}>✕</button>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => abrirEditar(mov)} style={{ ...S.btnSecundario, padding: "3px 8px", fontSize: 11 }}>✏</button>
+                <button onClick={() => eliminar(mov.id)} style={S.btnDanger}>✕</button>
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Modal */}
+      {/* Modal nuevo/editar movimiento */}
       {modalAbierto && (
         <Modal titulo={`Nuevo ${form.tipo}`} onClose={() => setModalAbierto(false)}>
           <label style={S.label}>Tipo</label>
@@ -688,8 +768,55 @@ function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiar
             placeholder="Nombre" style={S.input} />
 
           <button onClick={guardar} style={S.btnPrimario}>
-            Guardar {form.tipo}
+            {itemEditando ? "Guardar cambios" : `Guardar ${form.tipo}`}
           </button>
+        </Modal>
+      )}
+
+      {/* Modal: agregar gasto al inventario */}
+      {modalInsumo && (
+        <Modal titulo="¿Agregar al inventario?" onClose={() => setModalInsumo(null)}>
+          <div style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>
+            Detectamos un gasto de insumo. ¿Quieres registrar la entrada al stock?
+          </div>
+          <label style={S.label}>Producto</label>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <button onClick={() => setFI("es_nuevo", false)}
+              style={{ flex: 1, padding: 8, border: "1.5px solid", borderRadius: 8, cursor: "pointer",
+                borderColor: !formInsumo.es_nuevo ? "#C8852A" : "#ddd",
+                background: !formInsumo.es_nuevo ? "#C8852A" : "#fff",
+                color: !formInsumo.es_nuevo ? "#fff" : "#666", fontSize: 13 }}>
+              Existente
+            </button>
+            <button onClick={() => setFI("es_nuevo", true)}
+              style={{ flex: 1, padding: 8, border: "1.5px solid", borderRadius: 8, cursor: "pointer",
+                borderColor: formInsumo.es_nuevo ? "#C8852A" : "#ddd",
+                background: formInsumo.es_nuevo ? "#C8852A" : "#fff",
+                color: formInsumo.es_nuevo ? "#fff" : "#666", fontSize: 13 }}>
+              Nuevo
+            </button>
+          </div>
+          {!formInsumo.es_nuevo && inventario && inventario.length > 0 ? (
+            <select value={formInsumo.producto_id} onChange={e => setFI("producto_id", e.target.value)} style={S.select}>
+              <option value="">Seleccionar producto…</option>
+              {inventario.map(p => <option key={p.id} value={p.id}>{p.nombre} ({p.unidad})</option>)}
+            </select>
+          ) : formInsumo.es_nuevo ? (
+            <>
+              <input value={formInsumo.nombre} onChange={e => setFI("nombre", e.target.value)}
+                placeholder="Nombre del producto" style={S.input} />
+              <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>El producto se creará automáticamente en Insumos.</div>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: "#aaa", marginBottom: 8 }}>No hay productos en inventario aún.</div>
+          )}
+          <label style={S.label}>Cantidad a ingresar</label>
+          <input type="number" value={formInsumo.cantidad} onChange={e => setFI("cantidad", e.target.value)}
+            placeholder="0" style={S.input} inputMode="numeric" autoFocus />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button onClick={guardarInsumo} style={S.btnPrimario}>✅ Registrar entrada</button>
+            <button onClick={() => setModalInsumo(null)} style={{ ...S.btnSecundario, flex: 1 }}>Omitir</button>
+          </div>
         </Modal>
       )}
     </div>
@@ -697,111 +824,206 @@ function ModuloFinanzas({ datos, agregar, eliminar, formularioInicial, onLimpiar
 }
 
 // ─── MÓDULO INVENTARIO ────────────────────────────────────────────────────────
-function ModuloInventario({ datos, agregar, eliminar }) {
-  const [modalAbierto, setModalAbierto] = useState(false);
-  const [filtroCentro, setFiltroCentro] = useState("todos");
-  const [form, setForm] = useState({
-    nombre: "", cantidad: "", unidad: "unidad", stockMinimo: "",
-    centro: "campo_general", categoria: "", observacion: "",
-  });
+function ModuloInventario({ datos, agregar, actualizar, eliminar, movimientos, agregarMov }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | "editar" | "movimiento"
+  const [itemEditando, setItemEditando] = useState(null);
+  const [filtroCat, setFiltroCat] = useState("todos");
+  const FORM_VACIO = { nombre: "", unidad: "kg", minimo: "", categoria: "Fertilizantes foliares", descripcion: "", proveedor: "" };
+  const [form, setForm] = useState(FORM_VACIO);
+  const [formMov, setFormMov] = useState({ tipo: "entrada", cantidad: "", motivo: "compra", notas: "", fecha: hoy() });
+  const [productoSelMov, setProductoSelMov] = useState(null);
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const set  = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setM = (k, v) => setFormMov(f => ({ ...f, [k]: v }));
 
-  const guardar = () => {
-    if (!form.nombre || !form.cantidad) return;
-    agregar({ ...form, stock: Number(form.cantidad), cantidad: undefined });
-    setForm({ nombre: "", cantidad: "", unidad: "unidad", stockMinimo: "", centro: "campo_general", categoria: "", observacion: "" });
-    setModalAbierto(false);
+  const abrirNuevo = () => { setForm(FORM_VACIO); setModal("nuevo"); };
+  const abrirEditar = (item) => {
+    setItemEditando(item);
+    setForm({ nombre: item.nombre || "", unidad: item.unidad || "kg", minimo: item.minimo || "",
+      categoria: item.categoria || "Fertilizantes foliares", descripcion: item.descripcion || "", proveedor: item.proveedor || "" });
+    setModal("editar");
+  };
+  const abrirMov = (item) => {
+    setProductoSelMov(item);
+    setFormMov({ tipo: "entrada", cantidad: "", motivo: "compra", notas: "", fecha: hoy() });
+    setModal("movimiento");
   };
 
-  const filtrados = datos
-    .filter(d => filtroCentro === "todos" || d.centro === filtroCentro);
+  const guardar = () => {
+    if (!form.nombre) return;
+    if (modal === "editar" && itemEditando) {
+      actualizar({ ...itemEditando, ...form, minimo: Number(form.minimo || 0) });
+    } else {
+      agregar({ ...form, minimo: Number(form.minimo || 0) });
+    }
+    setModal(null); setItemEditando(null);
+  };
+
+  const guardarMov = () => {
+    if (!formMov.cantidad || !productoSelMov) return;
+    agregarMov({
+      producto_id: productoSelMov.id,
+      producto_nombre: productoSelMov.nombre,
+      tipo: formMov.tipo,
+      cantidad: Number(formMov.cantidad),
+      unidad: productoSelMov.unidad,
+      motivo: formMov.motivo,
+      tarea_id: null, tarea_titulo: null,
+      fecha: formMov.fecha,
+      notas: formMov.notas,
+    });
+    setModal(null);
+  };
+
+  // Agrupar por categoría
+  const cats = ["todos", ...CATEGORIAS_INVENTARIO];
+  const filtrados = filtroCat === "todos" ? datos : datos.filter(d => d.categoria === filtroCat);
+  const agrupados = {};
+  filtrados.forEach(d => {
+    const cat = d.categoria || "Otros";
+    if (!agrupados[cat]) agrupados[cat] = [];
+    agrupados[cat].push(d);
+  });
 
   return (
     <div>
       <div style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0 }}>Inventario</h2>
-        <button onClick={() => setModalAbierto(true)}
-          style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>
-          + Agregar
-        </button>
+        <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0 }}>Insumos</h2>
+        <button onClick={abrirNuevo} style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>+ Agregar</button>
       </div>
 
-      <div style={{ padding: "0 16px 8px", display: "flex", gap: 8, overflowX: "auto" }}>
-        {["todos", ...CENTROS.map(c => c.id)].map(id => {
-          const c = CENTROS.find(x => x.id === id);
-          return (
-            <button key={id} onClick={() => setFiltroCentro(id)}
-              style={{ ...S.btnSecundario, padding: "6px 12px", whiteSpace: "nowrap",
-                background: filtroCentro === id ? "#C8852A" : "transparent",
-                color: filtroCentro === id ? "#fff" : "#C8852A" }}>
-              {id === "todos" ? "Todos" : `${c?.icon} ${c?.id}`}
-            </button>
-          );
-        })}
+      {/* Filtro por categoría */}
+      <div style={{ padding: "0 16px 8px", display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8 }}>
+        {cats.map(cat => (
+          <button key={cat} onClick={() => setFiltroCat(cat)}
+            style={{ ...S.btnSecundario, padding: "5px 10px", whiteSpace: "nowrap", fontSize: 12,
+              background: filtroCat === cat ? "#C8852A" : "transparent",
+              color: filtroCat === cat ? "#fff" : "#C8852A" }}>
+            {cat === "todos" ? "Todos" : cat}
+          </button>
+        ))}
       </div>
 
-      <div style={S.card}>
-        {filtrados.length === 0 && <p style={{ color: "#aaa", fontSize: 14, textAlign: "center", padding: "20px 0" }}>Sin productos.</p>}
-        {filtrados.map(item => {
-          const bajo = Number(item.stock || 0) <= Number(item.stockMinimo || 0);
-          return (
-            <div key={item.id} style={S.listaItem}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 15, fontWeight: 600 }}>{item.nombre}</span>
-                  {bajo && <span style={S.tag("#c0392b")}>⚠ bajo</span>}
+      {datos.length === 0 && (
+        <div style={S.card}>
+          <p style={{ color: "#aaa", fontSize: 14, textAlign: "center", padding: "20px 0" }}>Sin productos. Agrega tu primer insumo.</p>
+        </div>
+      )}
+
+      {Object.entries(agrupados).map(([cat, items]) => (
+        <div key={cat} style={S.card}>
+          <div style={{ ...S.cardTitulo, marginBottom: 8 }}>{cat}</div>
+          {items.map(item => {
+            const stock = calcStock(item.id, movimientos);
+            const bajo = item.minimo && stock <= Number(item.minimo);
+            return (
+              <div key={item.id} style={{ ...S.listaItem, alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 15, fontWeight: 600 }}>{item.nombre}</span>
+                    {bajo && <span style={S.tag("#c0392b")}>⚠ bajo</span>}
+                  </div>
+                  {item.proveedor && <div style={{ fontSize: 11, color: "#aaa" }}>{item.proveedor}</div>}
+                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                    <button onClick={() => abrirMov(item)}
+                      style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>
+                      ± Movimiento
+                    </button>
+                    <button onClick={() => abrirEditar(item)}
+                      style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>
+                      ✏ Editar
+                    </button>
+                  </div>
                 </div>
-                <div style={{ fontSize: 12, color: "#888" }}>
-                  {CENTROS.find(c => c.id === item.centro)?.icon} {item.centro}
-                  {item.categoria ? ` · ${item.categoria}` : ""}
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: bajo ? "#c0392b" : "#3D2B1F" }}>
+                    {stock} {item.unidad}
+                  </div>
+                  {item.minimo ? <div style={{ fontSize: 11, color: "#aaa" }}>mín {item.minimo}</div> : null}
+                  <button onClick={() => eliminar(item.id)} style={{ ...S.btnDanger, marginTop: 4 }}>✕</button>
                 </div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-                <div style={{ fontWeight: 700, color: bajo ? "#c0392b" : "#3D2B1F" }}>
-                  {item.stock} {item.unidad}
-                </div>
-                <button onClick={() => eliminar(item.id)} style={S.btnDanger}>✕</button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      ))}
 
-      {modalAbierto && (
-        <Modal titulo="Nuevo producto" onClose={() => setModalAbierto(false)}>
+      {/* Modal nuevo/editar producto */}
+      {(modal === "nuevo" || modal === "editar") && (
+        <Modal titulo={modal === "editar" ? "Editar producto" : "Nuevo producto"} onClose={() => setModal(null)}>
           <label style={S.label}>Nombre del producto</label>
           <input value={form.nombre} onChange={e => set("nombre", e.target.value)}
-            placeholder="Ej: Herbicida Glifosato" style={S.input} />
+            placeholder="Ej: Óxido de cobre 50%" style={S.input} autoFocus />
+
+          <label style={S.label}>Categoría</label>
+          <select value={form.categoria} onChange={e => set("categoria", e.target.value)} style={S.select}>
+            {CATEGORIAS_INVENTARIO.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
 
           <div style={S.row}>
-            <div style={{ flex: 2 }}>
-              <label style={S.label}>Cantidad actual</label>
-              <input type="number" value={form.cantidad} onChange={e => set("cantidad", e.target.value)}
-                placeholder="0" style={S.input} inputMode="numeric" />
-            </div>
             <div style={{ flex: 1 }}>
               <label style={S.label}>Unidad</label>
               <select value={form.unidad} onChange={e => set("unidad", e.target.value)} style={S.select}>
                 {UNIDADES.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
             </div>
+            <div style={{ flex: 1 }}>
+              <label style={S.label}>Stock mínimo</label>
+              <input type="number" value={form.minimo} onChange={e => set("minimo", e.target.value)}
+                placeholder="0" style={S.input} inputMode="numeric" />
+            </div>
           </div>
 
-          <label style={S.label}>Stock mínimo (alerta)</label>
-          <input type="number" value={form.stockMinimo} onChange={e => set("stockMinimo", e.target.value)}
-            placeholder="0" style={S.input} inputMode="numeric" />
+          <label style={S.label}>Proveedor (opcional)</label>
+          <input value={form.proveedor} onChange={e => set("proveedor", e.target.value)}
+            placeholder="Nombre del proveedor" style={S.input} />
 
-          <label style={S.label}>Centro de costo</label>
-          <select value={form.centro} onChange={e => set("centro", e.target.value)} style={S.select}>
-            {CENTROS.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+          <button onClick={guardar} style={S.btnPrimario}>
+            {modal === "editar" ? "Guardar cambios" : "Agregar producto"}
+          </button>
+        </Modal>
+      )}
+
+      {/* Modal movimiento (entrada/salida) */}
+      {modal === "movimiento" && productoSelMov && (
+        <Modal titulo={`${productoSelMov.nombre}`} onClose={() => setModal(null)}>
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 12 }}>
+            Stock actual: <strong style={{ color: "#3D2B1F" }}>
+              {calcStock(productoSelMov.id, movimientos)} {productoSelMov.unidad}
+            </strong>
+          </div>
+
+          <div style={S.row}>
+            <div style={{ flex: 1 }}>
+              <label style={S.label}>Tipo</label>
+              <select value={formMov.tipo} onChange={e => setM("tipo", e.target.value)} style={S.select}>
+                <option value="entrada">📥 Entrada (compra)</option>
+                <option value="salida">📤 Salida (uso/ajuste)</option>
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={S.label}>Cantidad ({productoSelMov.unidad})</label>
+              <input type="number" value={formMov.cantidad} onChange={e => setM("cantidad", e.target.value)}
+                placeholder="0" style={S.input} inputMode="numeric" autoFocus />
+            </div>
+          </div>
+
+          <label style={S.label}>Motivo</label>
+          <select value={formMov.motivo} onChange={e => setM("motivo", e.target.value)} style={S.select}>
+            {formMov.tipo === "entrada"
+              ? ["compra","ajuste manual","devolucion"].map(m => <option key={m} value={m}>{m}</option>)
+              : ["uso en tarea","merma","vencimiento","ajuste manual"].map(m => <option key={m} value={m}>{m}</option>)
+            }
           </select>
 
-          <label style={S.label}>Categoría (opcional)</label>
-          <input value={form.categoria} onChange={e => set("categoria", e.target.value)}
-            placeholder="Ej: Fitosanitarios" style={S.input} />
+          <label style={S.label}>Fecha</label>
+          <input type="date" value={formMov.fecha} onChange={e => setM("fecha", e.target.value)} style={S.input} />
 
-          <button onClick={guardar} style={S.btnPrimario}>Guardar producto</button>
+          <label style={S.label}>Notas (opcional)</label>
+          <input value={formMov.notas} onChange={e => setM("notas", e.target.value)}
+            placeholder="Ej: Factura 1234" style={S.input} />
+
+          <button onClick={guardarMov} style={S.btnPrimario}>Registrar movimiento</button>
         </Modal>
       )}
     </div>
@@ -813,26 +1035,90 @@ const PRIORIDADES = ["urgente", "alta", "normal", "baja"];
 const ESTADOS_TAREA = ["pendiente", "en progreso", "completada"];
 const RESPONSABLES = ["Juaco", "Alejandra", "Joel", "Abraham", "Hernán", "Josefa"];
 
-function ModuloTareas({ datos, agregar, eliminar, setDatos }) {
-  const [modalAbierto, setModalAbierto] = useState(false);
+function ModuloTareas({ datos, agregar, actualizar, eliminar, setDatos, inventario, agregarMovInventario }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | "editar" | "confirmarInsumos"
   const [filtroEstado, setFiltroEstado] = useState("activas");
-  const [form, setForm] = useState({
+  const [tareaEditando, setTareaEditando] = useState(null);
+  const [tareaCompletando, setTareaCompletando] = useState(null);
+
+  const FORM_VACIO = {
     titulo: "", descripcion: "", prioridad: "normal", estado: "pendiente",
-    responsable: "Juaco", centro: "campo_general", fechaLimite: "",
-  });
+    responsable: "Juaco", centro: "campo_general", fechaLimite: "", insumos: [],
+  };
+  const [form, setForm] = useState(FORM_VACIO);
+  const [nuevoInsumo, setNuevoInsumo] = useState({ producto_id: "", producto_nombre: "", cantidad: "", unidad: "" });
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const guardar = () => {
-    if (!form.titulo) return;
-    agregar({ ...form, fechaCreacion: hoy() });
-    setForm({ titulo: "", descripcion: "", prioridad: "normal", estado: "pendiente", responsable: "Juaco", centro: "campo_general", fechaLimite: "" });
-    setModalAbierto(false);
+  const abrirNuevo = () => { setForm(FORM_VACIO); setTareaEditando(null); setModal("nuevo"); };
+  const abrirEditar = (t) => {
+    setTareaEditando(t);
+    setForm({
+      titulo: t.titulo || "", descripcion: t.descripcion || "",
+      prioridad: t.prioridad || "normal", estado: t.estado || "pendiente",
+      responsable: t.responsable || "Juaco", centro: t.centro || "campo_general",
+      fechaLimite: t.fechaLimite || t.fecha_limite || "",
+      insumos: t.insumos ? (typeof t.insumos === "string" ? JSON.parse(t.insumos) : t.insumos) : [],
+    });
+    setModal("editar");
   };
 
-  const cambiarEstado = (id, nuevoEstado) => {
-    const actualizados = datos.map(t => t.id === id ? { ...t, estado: nuevoEstado } : t);
+  const guardar = () => {
+    if (!form.titulo) return;
+    const datos_guardar = { ...form, insumos: JSON.stringify(form.insumos), fechaCreacion: hoy() };
+    if (modal === "editar" && tareaEditando) {
+      actualizar({ ...tareaEditando, ...datos_guardar });
+    } else {
+      agregar(datos_guardar);
+    }
+    setModal(null); setTareaEditando(null);
+  };
+
+  const agregarInsumo = () => {
+    if (!nuevoInsumo.producto_id || !nuevoInsumo.cantidad) return;
+    set("insumos", [...form.insumos, { ...nuevoInsumo, cantidad: Number(nuevoInsumo.cantidad) }]);
+    setNuevoInsumo({ producto_id: "", producto_nombre: "", cantidad: "", unidad: "" });
+  };
+
+  const quitarInsumo = (idx) => set("insumos", form.insumos.filter((_, i) => i !== idx));
+
+  const cambiarEstado = (tarea, nuevoEstado) => {
+    if (nuevoEstado === "completada") {
+      const insumosArr = tarea.insumos
+        ? (typeof tarea.insumos === "string" ? (() => { try { return JSON.parse(tarea.insumos); } catch { return []; } })() : tarea.insumos)
+        : [];
+      if (insumosArr.length > 0) {
+        setTareaCompletando({ tarea, insumosArr });
+        setModal("confirmarInsumos");
+        return;
+      }
+    }
+    const actualizados = datos.map(t => t.id === tarea.id ? { ...t, estado: nuevoEstado } : t);
     setDatos(actualizados);
+  };
+
+  const confirmarCompletado = (registrarSalidas) => {
+    if (!tareaCompletando) return;
+    const { tarea, insumosArr } = tareaCompletando;
+    if (registrarSalidas) {
+      insumosArr.forEach(ins => {
+        agregarMovInventario({
+          producto_id: ins.producto_id,
+          producto_nombre: ins.producto_nombre,
+          tipo: "salida",
+          cantidad: Number(ins.cantidad),
+          unidad: ins.unidad,
+          motivo: "uso en tarea",
+          tarea_id: tarea.id,
+          tarea_titulo: tarea.titulo,
+          fecha: hoy(),
+          notas: `Tarea completada: ${tarea.titulo}`,
+        });
+      });
+    }
+    const actualizados = datos.map(t => t.id === tarea.id ? { ...t, estado: "completada" } : t);
+    setDatos(actualizados);
+    setModal(null); setTareaCompletando(null);
   };
 
   const filtradas = datos
@@ -845,10 +1131,7 @@ function ModuloTareas({ datos, agregar, eliminar, setDatos }) {
     <div>
       <div style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0 }}>Tareas</h2>
-        <button onClick={() => setModalAbierto(true)}
-          style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>
-          + Nueva
-        </button>
+        <button onClick={abrirNuevo} style={{ ...S.btnPrimario, width: "auto", padding: "10px 20px", fontSize: 14 }}>+ Nueva</button>
       </div>
 
       <div style={{ padding: "0 16px 8px", display: "flex", gap: 8 }}>
@@ -864,34 +1147,40 @@ function ModuloTareas({ datos, agregar, eliminar, setDatos }) {
 
       <div style={S.card}>
         {filtradas.length === 0 && <p style={{ color: "#aaa", fontSize: 14, textAlign: "center", padding: "20px 0" }}>Sin tareas.</p>}
-        {filtradas.map(t => (
-          <div key={t.id} style={{ ...S.listaItem, opacity: t.estado === "completada" ? 0.5 : 1 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <span style={S.tag(coloresPrioridad[t.prioridad] || "#888")}>{t.prioridad}</span>
-                <span style={{ fontSize: 12, color: "#888" }}>{t.responsable}</span>
+        {filtradas.map(t => {
+          const insumosArr = t.insumos ? (typeof t.insumos === "string" ? (() => { try { return JSON.parse(t.insumos); } catch { return []; } })() : t.insumos) : [];
+          return (
+            <div key={t.id} style={{ ...S.listaItem, opacity: t.estado === "completada" ? 0.5 : 1, alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={S.tag(coloresPrioridad[t.prioridad] || "#888")}>{t.prioridad}</span>
+                  <span style={{ fontSize: 12, color: "#888" }}>{t.responsable}</span>
+                  {insumosArr.length > 0 && <span style={S.tag("#4A5E3A")}>📦 {insumosArr.length} insumo{insumosArr.length > 1 ? "s" : ""}</span>}
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{t.titulo}</div>
+                {t.descripcion && <div style={{ fontSize: 12, color: "#888" }}>{t.descripcion}</div>}
+                {(t.fechaLimite || t.fecha_limite) && <div style={{ fontSize: 11, color: "#C8852A" }}>📅 {t.fechaLimite || t.fecha_limite}</div>}
+                <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                  <select value={t.estado}
+                    onChange={e => cambiarEstado(t, e.target.value)}
+                    style={{ ...S.select, width: "auto", padding: "4px 8px", fontSize: 12, marginBottom: 0 }}>
+                    {ESTADOS_TAREA.map(e => <option key={e} value={e}>{e}</option>)}
+                  </select>
+                  <button onClick={() => abrirEditar(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>✏ Editar</button>
+                </div>
               </div>
-              <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{t.titulo}</div>
-              {t.descripcion && <div style={{ fontSize: 12, color: "#888" }}>{t.descripcion}</div>}
-              {t.fechaLimite && <div style={{ fontSize: 11, color: "#C8852A" }}>📅 {t.fechaLimite}</div>}
-              <div style={{ marginTop: 8 }}>
-                <select value={t.estado}
-                  onChange={e => cambiarEstado(t.id, e.target.value)}
-                  style={{ ...S.select, width: "auto", padding: "4px 8px", fontSize: 12, marginBottom: 0 }}>
-                  {ESTADOS_TAREA.map(e => <option key={e} value={e}>{e}</option>)}
-                </select>
-              </div>
+              <button onClick={() => eliminar(t.id)} style={{ ...S.btnDanger, marginLeft: 8 }}>✕</button>
             </div>
-            <button onClick={() => eliminar(t.id)} style={{ ...S.btnDanger, marginLeft: 8 }}>✕</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {modalAbierto && (
-        <Modal titulo="Nueva tarea" onClose={() => setModalAbierto(false)}>
+      {/* Modal nueva/editar tarea */}
+      {(modal === "nuevo" || modal === "editar") && (
+        <Modal titulo={modal === "editar" ? "Editar tarea" : "Nueva tarea"} onClose={() => setModal(null)}>
           <label style={S.label}>Título</label>
           <input value={form.titulo} onChange={e => set("titulo", e.target.value)}
-            placeholder="¿Qué hay que hacer?" style={S.input} />
+            placeholder="¿Qué hay que hacer?" style={S.input} autoFocus />
 
           <label style={S.label}>Descripción (opcional)</label>
           <input value={form.descripcion} onChange={e => set("descripcion", e.target.value)}
@@ -920,7 +1209,62 @@ function ModuloTareas({ datos, agregar, eliminar, setDatos }) {
           <label style={S.label}>Fecha límite (opcional)</label>
           <input type="date" value={form.fechaLimite} onChange={e => set("fechaLimite", e.target.value)} style={S.input} />
 
-          <button onClick={guardar} style={S.btnPrimario}>Guardar tarea</button>
+          {/* Sección insumos */}
+          <div style={{ marginTop: 8, borderTop: "1px solid #f0ece6", paddingTop: 12 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#3D2B1F" }}>📦 Insumos a usar (opcional)</div>
+            {form.insumos.map((ins, idx) => (
+              <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 13 }}>
+                <span style={{ flex: 1, color: "#555" }}>{ins.producto_nombre}</span>
+                <span style={{ color: "#888" }}>{ins.cantidad} {ins.unidad}</span>
+                <button onClick={() => quitarInsumo(idx)} style={{ ...S.btnDanger, padding: "2px 8px" }}>✕</button>
+              </div>
+            ))}
+            {inventario.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                <select
+                  value={nuevoInsumo.producto_id}
+                  onChange={e => {
+                    const prod = inventario.find(p => p.id === e.target.value);
+                    setNuevoInsumo(n => ({ ...n, producto_id: e.target.value, producto_nombre: prod?.nombre || "", unidad: prod?.unidad || "" }));
+                  }}
+                  style={{ ...S.select, flex: 2, marginBottom: 0, fontSize: 12 }}>
+                  <option value="">Seleccionar producto…</option>
+                  {inventario.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+                <input type="number" placeholder="Cant." value={nuevoInsumo.cantidad}
+                  onChange={e => setNuevoInsumo(n => ({ ...n, cantidad: e.target.value }))}
+                  style={{ ...S.input, width: 70, marginBottom: 0, fontSize: 12 }} inputMode="numeric" />
+                <button onClick={agregarInsumo} style={{ ...S.btnSecundario, padding: "6px 12px", fontSize: 12 }}>+ Add</button>
+              </div>
+            )}
+            {inventario.length === 0 && <div style={{ fontSize: 12, color: "#aaa" }}>Agrega productos al inventario para asignarlos aquí.</div>}
+          </div>
+
+          <button onClick={guardar} style={{ ...S.btnPrimario, marginTop: 16 }}>
+            {modal === "editar" ? "Guardar cambios" : "Crear tarea"}
+          </button>
+        </Modal>
+      )}
+
+      {/* Modal confirmar insumos al completar */}
+      {modal === "confirmarInsumos" && tareaCompletando && (
+        <Modal titulo="Confirmar uso de insumos" onClose={() => setModal(null)}>
+          <div style={{ fontSize: 14, color: "#555", marginBottom: 12 }}>
+            Esta tarea tiene insumos asignados. ¿Registrar el descuento del stock?
+          </div>
+          {tareaCompletando.insumosArr.map((ins, i) => (
+            <div key={i} style={{ fontSize: 13, padding: "4px 0", borderBottom: "1px solid #f0ece6" }}>
+              📦 {ins.producto_nombre}: <strong>−{ins.cantidad} {ins.unidad}</strong>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={() => confirmarCompletado(true)} style={S.btnPrimario}>
+              ✅ Sí, descontar stock
+            </button>
+            <button onClick={() => confirmarCompletado(false)} style={{ ...S.btnSecundario, flex: 1 }}>
+              Solo completar
+            </button>
+          </div>
         </Modal>
       )}
     </div>
@@ -1363,6 +1707,7 @@ export default function App() {
   const tareas     = useTabla("tareas");
   const trabajadores = useTabla("trabajadores");
   const registrosHH  = useTabla("registrosHH");
+  const movInventario = useTabla("movInventario");
 
   const showToast = (msg) => setToast(msg);
 
@@ -1374,12 +1719,12 @@ export default function App() {
       tareas.recargar(),
       trabajadores.recargar(),
       registrosHH.recargar(),
+      movInventario.recargar(),
     ]);
     setRecargando(false);
     showToast("✅ Datos actualizados");
   };
 
-  // Wrapper para agregar con toast
   const [formularioEscaner, setFormularioEscaner] = useState(null);
 
   const agregarConToast = (tabla, msg) => (item) => {
@@ -1387,7 +1732,6 @@ export default function App() {
     showToast(msg);
   };
 
-  // Escáner extrae datos → abre modal de Finanzas pre-llenado para revisar antes de guardar
   const handleExtraccion = (datos) => {
     setFormularioEscaner(datos);
     setTab("finanzas");
@@ -1407,22 +1751,31 @@ export default function App() {
         return <ModuloFinanzas
           datos={finanzas.datos}
           agregar={agregarConToast(finanzas, "💰 Movimiento guardado")}
+          actualizar={finanzas.actualizar}
           eliminar={finanzas.eliminar}
           formularioInicial={formularioEscaner}
           onLimpiarFormulario={() => setFormularioEscaner(null)}
+          inventario={inventario.datos}
+          agregarMovInventario={agregarConToast(movInventario, "📦 Stock actualizado")}
         />;
       case "inventario":
         return <ModuloInventario
           datos={inventario.datos}
           agregar={agregarConToast(inventario, "📦 Producto guardado")}
+          actualizar={inventario.actualizar}
           eliminar={inventario.eliminar}
+          movimientos={movInventario.datos}
+          agregarMov={agregarConToast(movInventario, "📦 Movimiento registrado")}
         />;
       case "tareas":
         return <ModuloTareas
           datos={tareas.datos}
           agregar={agregarConToast(tareas, "✅ Tarea creada")}
+          actualizar={tareas.actualizar}
           eliminar={tareas.eliminar}
           setDatos={tareas.setDatos}
+          inventario={inventario.datos}
+          agregarMovInventario={agregarConToast(movInventario, "📦 Stock descontado")}
         />;
       case "personal":
         return <ModuloPersonal
