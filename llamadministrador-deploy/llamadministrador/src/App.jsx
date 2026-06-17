@@ -98,7 +98,7 @@ function useTabla(nombre) {
   }, [nombre]);
 
   const agregar = useCallback((item) => {
-    const nuevo = { ...item, id: `${nombre}_${Date.now()}` };
+    const nuevo = { ...item, id: item.id || `${nombre}_${Date.now()}` };
     setDatosRaw(prev => {
       const next = [nuevo, ...prev];
       lsSet(`ll_${nombre}`, next);
@@ -565,7 +565,7 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
 
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
-function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicial, onLimpiarFormulario, inventario, agregarMovInventario }) {
+function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicial, onLimpiarFormulario, inventario, agregarMovInventario, agregarProductoInventario }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [modalInsumo, setModalInsumo] = useState(null); // datos del gasto recién guardado
   const [itemEditando, setItemEditando] = useState(null);
@@ -627,22 +627,42 @@ function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicia
 
   const guardarInsumo = () => {
     if (!formInsumo.cantidad) return;
-    if (formInsumo.es_nuevo || !formInsumo.producto_id) {
-      // Crear producto nuevo + movimiento entrada
-      // Usamos un ID temporal para el producto; el agregar lo asignará
-      const tempId = `inv_${Date.now()}`;
-      if (inventario) {
-        // Llamamos agregar pero necesitamos el ID — workaround: usamos timestamp
-      }
-    }
-    // Si producto existente: crear movimiento entrada
-    if (formInsumo.producto_id && !formInsumo.es_nuevo) {
+
+    if (formInsumo.es_nuevo) {
+      // Crear producto nuevo en catálogo con ID pre-generado
+      if (!formInsumo.nombre) return;
+      const nuevoId = `inventario_${Date.now()}`;
+      agregarProductoInventario({
+        id: nuevoId,
+        nombre: formInsumo.nombre,
+        categoria: formInsumo.categoria || "Fertilizantes foliares",
+        unidad: formInsumo.unidad || "kg",
+        minimo: 0,
+        descripcion: "",
+        proveedor: modalInsumo?.proveedor || "",
+      });
+      agregarMovInventario({
+        producto_id: nuevoId,
+        producto_nombre: formInsumo.nombre,
+        tipo: "entrada",
+        cantidad: Number(formInsumo.cantidad),
+        unidad: formInsumo.unidad || "kg",
+        motivo: "compra",
+        tarea_id: null, tarea_titulo: null,
+        fecha: modalInsumo?.fecha || hoy(),
+        notas: `Desde gasto: ${modalInsumo?.descripcion || ""}`,
+      });
+    } else if (formInsumo.producto_id) {
+      // Producto existente → solo movimiento de entrada
       const prod = inventario?.find(p => p.id === formInsumo.producto_id);
       if (prod) {
         agregarMovInventario({
-          producto_id: prod.id, producto_nombre: prod.nombre,
-          tipo: "entrada", cantidad: Number(formInsumo.cantidad),
-          unidad: prod.unidad, motivo: "compra",
+          producto_id: prod.id,
+          producto_nombre: prod.nombre,
+          tipo: "entrada",
+          cantidad: Number(formInsumo.cantidad),
+          unidad: prod.unidad,
+          motivo: "compra",
           tarea_id: null, tarea_titulo: null,
           fecha: modalInsumo?.fecha || hoy(),
           notas: `Desde gasto: ${modalInsumo?.descripcion || ""}`,
@@ -1757,6 +1777,7 @@ export default function App() {
           onLimpiarFormulario={() => setFormularioEscaner(null)}
           inventario={inventario.datos}
           agregarMovInventario={agregarConToast(movInventario, "📦 Stock actualizado")}
+          agregarProductoInventario={agregarConToast(inventario, "📦 Producto creado")}
         />;
       case "inventario":
         return <ModuloInventario
