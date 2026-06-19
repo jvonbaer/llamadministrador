@@ -565,7 +565,7 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
 
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
-function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicial, onLimpiarFormulario, inventario, agregarMovInventario, agregarProductoInventario }) {
+function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicial, onLimpiarFormulario, inventario, agregarMovInventario, agregarProductoInventario, trabajadores }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [modalInsumo, setModalInsumo] = useState(null); // datos del gasto recién guardado
   const [itemEditando, setItemEditando] = useState(null);
@@ -574,21 +574,37 @@ function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicia
   const [filtroMes, setFiltroMes] = useState(new Date().toISOString().slice(0, 7));
   const [formInsumo, setFormInsumo] = useState({ producto_id: "", es_nuevo: false, nombre: "", cantidad: "", unidad: "kg", categoria: "Fertilizantes foliares" });
 
-  const FORM_VACIO = { tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "" };
+  const FORM_VACIO = { tipo: "gasto", fecha: hoy(), monto: "", categoria: "", descripcion: "", centro: "campo_general", proveedor: "", trabajador_id: "" };
   const [form, setForm] = useState(FORM_VACIO);
+
+  // Busca coincidencia de nombre (tolerante a mayúsculas/orden de palabras simple)
+  const buscarTrabajadorPorNombre = (nombre) => {
+    if (!nombre || !trabajadores) return null;
+    const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const nNombre = norm(nombre);
+    return trabajadores.find(t => {
+      const nt = norm(t.nombre || "");
+      return nt === nNombre || nt.includes(nNombre) || nNombre.includes(nt);
+    }) || null;
+  };
 
   useEffect(() => {
     if (formularioInicial) {
       let fecha = formularioInicial.fecha || hoy();
       const anio = parseInt(fecha.slice(0, 4));
       if (anio > new Date().getFullYear() + 1 || anio < 2000) fecha = hoy();
+
+      const esLiquidacion = formularioInicial.tipo_documento === "liquidacion_sueldo";
+      const trabajadorMatch = esLiquidacion ? buscarTrabajadorPorNombre(formularioInicial.trabajador_nombre) : null;
+
       setForm({
         tipo: formularioInicial.tipo || "gasto", fecha,
         monto: formularioInicial.monto ? String(formularioInicial.monto) : "",
-        categoria: formularioInicial.categoria || "",
+        categoria: esLiquidacion ? "Mano de obra" : (formularioInicial.categoria || ""),
         descripcion: formularioInicial.descripcion || "",
-        centro: "campo_general",
-        proveedor: formularioInicial.proveedor || "",
+        centro: trabajadorMatch?.centro || "campo_general",
+        proveedor: formularioInicial.proveedor || formularioInicial.trabajador_nombre || "",
+        trabajador_id: trabajadorMatch?.id || "",
       });
       setItemEditando(null);
       setModalAbierto(true);
@@ -604,7 +620,7 @@ function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicia
     setForm({ tipo: item.tipo || "gasto", fecha: item.fecha || hoy(),
       monto: String(item.monto || ""), categoria: item.categoria || "",
       descripcion: item.descripcion || "", centro: item.centro || "campo_general",
-      proveedor: item.proveedor || "" });
+      proveedor: item.proveedor || "", trabajador_id: item.trabajador_id || "" });
     setModalAbierto(true);
   };
 
@@ -786,6 +802,16 @@ function ModuloFinanzas({ datos, agregar, actualizar, eliminar, formularioInicia
           <label style={S.label}>{form.tipo === "gasto" ? "Proveedor" : "Cliente"} (opcional)</label>
           <input value={form.proveedor} onChange={e => set("proveedor", e.target.value)}
             placeholder="Nombre" style={S.input} />
+
+          {form.categoria === "Mano de obra" && trabajadores && trabajadores.length > 0 && (
+            <>
+              <label style={S.label}>Vincular a trabajador (opcional)</label>
+              <select value={form.trabajador_id} onChange={e => set("trabajador_id", e.target.value)} style={S.select}>
+                <option value="">— Sin vincular —</option>
+                {trabajadores.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+              </select>
+            </>
+          )}
 
           <button onClick={guardar} style={S.btnPrimario}>
             {itemEditando ? "Guardar cambios" : `Guardar ${form.tipo}`}
@@ -1294,37 +1320,73 @@ function ModuloTareas({ datos, agregar, actualizar, eliminar, setDatos, inventar
 // ─── MÓDULO PERSONAL ──────────────────────────────────────────────────────────
 const TIPOS_TRABAJADOR = ["permanente", "temporal", "gerencial"];
 
-function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
+function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador, eliminarTrabajador,
   registros, agregarRegistro, eliminarRegistro }) {
   const [vista, setVista] = useState("equipo");
   const [modalTrabajador, setModalTrabajador] = useState(false);
   const [modalHH, setModalHH] = useState(false);
+  const [trabajadorEditando, setTrabajadorEditando] = useState(null);
+  const [trabajadorResumen, setTrabajadorResumen] = useState(null); // para ver resumen mensual
 
-  const [formT, setFormT] = useState({
-    nombre: "", tipo: "permanente", cargo: "", sueldoBase: "",
-    centros: ["campo_general"], activo: true,
-  });
+  const FORM_T_VACIO = { nombre: "", tipo: "permanente", cargo: "", sueldoBase: "", valorHora: "", centro: "campo_general", activo: true };
+  const [formT, setFormT] = useState(FORM_T_VACIO);
 
   const [formHH, setFormHH] = useState({
     trabajadorId: "", trabajadorNombre: "",
     fecha: hoy(), horas: "", actividad: "", centro: "campo_general",
-    jornal: "", observacion: "",
+    jornal: "", observacion: "", jornalEditadoManual: false,
   });
 
   const setT = (k, v) => setFormT(f => ({ ...f, [k]: v }));
   const setH = (k, v) => setFormHH(f => ({ ...f, [k]: v }));
 
+  const abrirNuevoTrabajador = () => { setFormT(FORM_T_VACIO); setTrabajadorEditando(null); setModalTrabajador(true); };
+  const abrirEditarTrabajador = (t) => {
+    setTrabajadorEditando(t);
+    setFormT({
+      nombre: t.nombre || "", tipo: t.tipo || "permanente", cargo: t.cargo || "",
+      sueldoBase: t.sueldoBase || "", valorHora: t.valorHora || "",
+      centro: t.centro || (Array.isArray(t.centros) ? t.centros[0] : "campo_general"),
+      activo: t.activo !== false,
+    });
+    setModalTrabajador(true);
+  };
+
   const guardarTrabajador = () => {
     if (!formT.nombre) return;
-    agregarTrabajador(formT);
-    setFormT({ nombre: "", tipo: "permanente", cargo: "", sueldoBase: "", centros: ["campo_general"], activo: true });
+    if (trabajadorEditando) {
+      actualizarTrabajador({ ...trabajadorEditando, ...formT });
+    } else {
+      agregarTrabajador(formT);
+    }
+    setFormT(FORM_T_VACIO);
+    setTrabajadorEditando(null);
     setModalTrabajador(false);
+  };
+
+  // Autocálculo del jornal cuando el trabajador es temporal con valorHora definido
+  const onCambioHoras = (horas) => {
+    setH("horas", horas);
+    const t = trabajadores.find(x => x.id === formHH.trabajadorId);
+    if (t?.tipo === "temporal" && t.valorHora && !formHH.jornalEditadoManual) {
+      setH("jornal", String(Math.round(Number(horas || 0) * Number(t.valorHora))));
+    }
+  };
+
+  const onSeleccionTrabajadorHH = (id) => {
+    const t = trabajadores.find(x => x.id === id);
+    setFormHH(f => ({
+      ...f, trabajadorId: id, trabajadorNombre: t?.nombre || "",
+      centro: t?.centro || f.centro, jornalEditadoManual: false,
+      jornal: (t?.tipo === "temporal" && t?.valorHora && f.horas) ? String(Math.round(Number(f.horas) * Number(t.valorHora))) : f.jornal,
+    }));
   };
 
   const guardarHH = () => {
     if (!formHH.trabajadorId || !formHH.horas) return;
-    agregarRegistro(formHH);
-    setFormHH({ trabajadorId: "", trabajadorNombre: "", fecha: hoy(), horas: "", actividad: "", centro: "campo_general", jornal: "", observacion: "" });
+    const { jornalEditadoManual, ...datosGuardar } = formHH;
+    agregarRegistro(datosGuardar);
+    setFormHH({ trabajadorId: "", trabajadorNombre: "", fecha: hoy(), horas: "", actividad: "", centro: "campo_general", jornal: "", observacion: "", jornalEditadoManual: false });
     setModalHH(false);
   };
 
@@ -1332,12 +1394,22 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
   const registrosMes = registros.filter(r => (r.fecha || "").startsWith(mesActual));
   const hhTotalesMes = registrosMes.reduce((a, b) => a + Number(b.horas || 0), 0);
 
+  // Resumen mensual por trabajador
+  const resumenTrabajador = (trabajadorId) => {
+    const regs = registros.filter(r => r.trabajadorId === trabajadorId && (r.fecha || "").startsWith(mesActual));
+    const horas = regs.reduce((a, b) => a + Number(b.horas || 0), 0);
+    const pagado = regs.reduce((a, b) => a + Number(b.jornal || 0), 0);
+    return { horas, pagado, dias: new Set(regs.map(r => r.fecha)).size, registros: regs };
+  };
+
+  const coloresTipo = { gerencial: "#C8852A", permanente: "#4A5E3A", temporal: "#888" };
+
   return (
     <div>
       <div style={{ padding: "12px 16px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0 }}>Personal</h2>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setModalTrabajador(true)} style={{ ...S.btnSecundario, padding: "8px 12px", fontSize: 13 }}>+ Persona</button>
+          <button onClick={abrirNuevoTrabajador} style={{ ...S.btnSecundario, padding: "8px 12px", fontSize: 13 }}>+ Persona</button>
           <button onClick={() => setModalHH(true)} style={{ ...S.btnPrimario, width: "auto", padding: "8px 14px", fontSize: 13 }}>+ HH</button>
         </div>
       </div>
@@ -1359,19 +1431,35 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
             HH este mes: <strong>{hhTotalesMes.toFixed(1)} hrs</strong>
           </div>
           {trabajadores.length === 0 && <p style={{ color: "#aaa", fontSize: 14, textAlign: "center" }}>Sin trabajadores.</p>}
-          {trabajadores.map(t => (
-            <div key={t.id} style={S.listaItem}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>{t.nombre}</div>
-                <div style={{ fontSize: 12, color: "#888" }}>{t.cargo || t.tipo}</div>
-                {t.sueldoBase && <div style={{ fontSize: 12, color: "#C8852A" }}>Base: ${fmt(t.sueldoBase)}</div>}
+          {trabajadores.map(t => {
+            const r = resumenTrabajador(t.id);
+            return (
+              <div key={t.id} style={{ ...S.listaItem, alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{t.nombre}</div>
+                  <div style={{ fontSize: 12, color: "#888" }}>{t.cargo || t.tipo}</div>
+                  {t.sueldoBase ? <div style={{ fontSize: 12, color: "#C8852A" }}>Base: ${fmt(t.sueldoBase)}/mes</div> : null}
+                  {t.tipo === "temporal" && t.valorHora ? <div style={{ fontSize: 12, color: "#C8852A" }}>Valor hora: ${fmt(t.valorHora)}</div> : null}
+                  {t.tipo === "temporal" && r.horas > 0 && (
+                    <div style={{ fontSize: 12, color: "#4A5E3A", marginTop: 2 }}>
+                      Este mes: {r.horas} hrs · {r.dias} día{r.dias !== 1 ? "s" : ""} · ${fmt(r.pagado)}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                    <button onClick={() => abrirEditarTrabajador(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>✏ Editar</button>
+                    {t.tipo === "temporal" && (
+                      <button onClick={() => setTrabajadorResumen(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>📊 Detalle</button>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                  <span style={S.tag(coloresTipo[t.tipo] || "#888")}>{t.tipo}</span>
+                  {t.activo === false && <span style={S.tag("#888")}>inactivo</span>}
+                  <button onClick={() => eliminarTrabajador(t.id)} style={S.btnDanger}>✕</button>
+                </div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-                <span style={S.tag(t.tipo === "gerencial" ? "#C8852A" : t.tipo === "permanente" ? "#4A5E3A" : "#888")}>{t.tipo}</span>
-                <button onClick={() => eliminarTrabajador(t.id)} style={S.btnDanger}>✕</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -1395,12 +1483,12 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
         </div>
       )}
 
-      {/* Modal trabajador */}
+      {/* Modal nuevo/editar trabajador */}
       {modalTrabajador && (
-        <Modal titulo="Agregar persona" onClose={() => setModalTrabajador(false)}>
+        <Modal titulo={trabajadorEditando ? "Editar persona" : "Agregar persona"} onClose={() => setModalTrabajador(false)}>
           <label style={S.label}>Nombre completo</label>
           <input value={formT.nombre} onChange={e => setT("nombre", e.target.value)}
-            placeholder="Nombre" style={S.input} />
+            placeholder="Nombre" style={S.input} autoFocus />
 
           <label style={S.label}>Tipo</label>
           <select value={formT.tipo} onChange={e => setT("tipo", e.target.value)} style={S.select}>
@@ -1411,11 +1499,36 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
           <input value={formT.cargo} onChange={e => setT("cargo", e.target.value)}
             placeholder="Ej: Operario campo" style={S.input} />
 
-          <label style={S.label}>Sueldo base ($)</label>
-          <input type="number" value={formT.sueldoBase} onChange={e => setT("sueldoBase", e.target.value)}
-            placeholder="0" style={S.input} inputMode="numeric" />
+          <label style={S.label}>Centro de costo principal</label>
+          <select value={formT.centro} onChange={e => setT("centro", e.target.value)} style={S.select}>
+            {CENTROS.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+          </select>
 
-          <button onClick={guardarTrabajador} style={S.btnPrimario}>Guardar</button>
+          {formT.tipo === "temporal" ? (
+            <>
+              <label style={S.label}>Valor hora ($)</label>
+              <input type="number" value={formT.valorHora} onChange={e => setT("valorHora", e.target.value)}
+                placeholder="0" style={S.input} inputMode="numeric" />
+              <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>
+                Se usará para calcular el jornal automáticamente al registrar HH.
+              </div>
+            </>
+          ) : (
+            <>
+              <label style={S.label}>Sueldo base ($/mes)</label>
+              <input type="number" value={formT.sueldoBase} onChange={e => setT("sueldoBase", e.target.value)}
+                placeholder="0" style={S.input} inputMode="numeric" />
+            </>
+          )}
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 13, color: "#555" }}>
+            <input type="checkbox" checked={formT.activo} onChange={e => setT("activo", e.target.checked)} />
+            Activo
+          </label>
+
+          <button onClick={guardarTrabajador} style={{ ...S.btnPrimario, marginTop: 12 }}>
+            {trabajadorEditando ? "Guardar cambios" : "Agregar"}
+          </button>
         </Modal>
       )}
 
@@ -1423,14 +1536,9 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
       {modalHH && (
         <Modal titulo="Registrar horas" onClose={() => setModalHH(false)}>
           <label style={S.label}>Trabajador</label>
-          <select value={formHH.trabajadorId}
-            onChange={e => {
-              const t = trabajadores.find(x => x.id === e.target.value);
-              setH("trabajadorId", e.target.value);
-              setH("trabajadorNombre", t?.nombre || "");
-            }} style={S.select}>
+          <select value={formHH.trabajadorId} onChange={e => onSeleccionTrabajadorHH(e.target.value)} style={S.select}>
             <option value="">— Seleccionar —</option>
-            {trabajadores.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+            {trabajadores.map(t => <option key={t.id} value={t.id}>{t.nombre} {t.tipo === "temporal" ? "(temporal)" : ""}</option>)}
           </select>
 
           <label style={S.label}>Fecha</label>
@@ -1439,12 +1547,13 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
           <div style={S.row}>
             <div style={{ flex: 1 }}>
               <label style={S.label}>Horas</label>
-              <input type="number" value={formHH.horas} onChange={e => setH("horas", e.target.value)}
+              <input type="number" value={formHH.horas} onChange={e => onCambioHoras(e.target.value)}
                 placeholder="0" style={S.input} inputMode="decimal" />
             </div>
             <div style={{ flex: 1 }}>
-              <label style={S.label}>Jornal ($)</label>
-              <input type="number" value={formHH.jornal} onChange={e => setH("jornal", e.target.value)}
+              <label style={S.label}>Jornal ($) {formHH.jornal && !formHH.jornalEditadoManual ? "· auto" : ""}</label>
+              <input type="number" value={formHH.jornal}
+                onChange={e => { setH("jornal", e.target.value); setH("jornalEditadoManual", true); }}
                 placeholder="0" style={S.input} inputMode="numeric" />
             </div>
           </div>
@@ -1461,9 +1570,50 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, eliminarTrabajador,
           <button onClick={guardarHH} style={S.btnPrimario}>Registrar horas</button>
         </Modal>
       )}
+
+      {/* Modal resumen mensual de trabajador temporal */}
+      {trabajadorResumen && (
+        <Modal titulo={`${trabajadorResumen.nombre} — ${new Date().toLocaleString("es-CL", { month: "long" })}`} onClose={() => setTrabajadorResumen(null)}>
+          {(() => {
+            const r = resumenTrabajador(trabajadorResumen.id);
+            return (
+              <>
+                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: "#3D2B1F" }}>{r.horas}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>horas</div>
+                  </div>
+                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: "#3D2B1F" }}>{r.dias}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>días</div>
+                  </div>
+                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#C8852A" }}>${fmt(r.pagado)}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>total</div>
+                  </div>
+                </div>
+                {r.registros.length === 0 && <p style={{ color: "#aaa", fontSize: 13, textAlign: "center" }}>Sin registros este mes.</p>}
+                {r.registros.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map(reg => (
+                  <div key={reg.id} style={{ ...S.listaItem, padding: "8px 0" }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{reg.fecha}</div>
+                      <div style={{ fontSize: 12, color: "#888" }}>{reg.actividad}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{reg.horas} hrs</div>
+                      <div style={{ fontSize: 12, color: "#C8852A" }}>${fmt(reg.jornal || 0)}</div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+        </Modal>
+      )}
     </div>
   );
 }
+
 
 // ─── MÓDULO ESCÁNER ───────────────────────────────────────────────────────────
 function ModuloEscaner({ onExtraer }) {
@@ -1547,8 +1697,26 @@ function ModuloEscaner({ onExtraer }) {
             role: "user",
             content: [
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-              { type: "text", text: `Analiza este documento (boleta, factura o recibo) y extrae los datos en formato JSON estricto, sin texto adicional, sin markdown:
+              { type: "text", text: `Analiza este documento y extrae los datos en formato JSON estricto, sin texto adicional, sin markdown.
+
+Primero identifica el tipo_documento: "liquidacion_sueldo" si es una liquidación de sueldo/remuneración (tiene nombre de trabajador, sueldo líquido, descuentos legales, AFP, salud, etc), o "boleta_factura" si es una boleta, factura o recibo de compra.
+
+Si es tipo_documento "liquidacion_sueldo", responde:
 {
+  "tipo_documento": "liquidacion_sueldo",
+  "tipo": "gasto",
+  "monto": número del SUELDO LÍQUIDO A PAGAR (sin puntos ni símbolos),
+  "fecha": "YYYY-MM-DD" (último día del período o fecha de pago),
+  "trabajador_nombre": "nombre completo del trabajador en la liquidación",
+  "periodo": "mes y año del período, ej: Junio 2026",
+  "descripcion": "Liquidación de sueldo — [nombre] — [período]",
+  "categoria": "Mano de obra",
+  "detalles": "desglose breve si es relevante (ej: incluye comisión, horas extra, etc)"
+}
+
+Si es tipo_documento "boleta_factura", responde:
+{
+  "tipo_documento": "boleta_factura",
   "tipo": "gasto" o "ingreso",
   "monto": número sin puntos ni símbolos,
   "fecha": "YYYY-MM-DD",
@@ -1557,6 +1725,7 @@ function ModuloEscaner({ onExtraer }) {
   "categoria": "una de estas: Insumos agrícolas, Combustible, Herramientas, Maquinaria, Mano de obra, Veterinario, Alimentación animales, Cafetería, Mantenimiento, Servicios básicos, Transporte, Administrativo, Otro",
   "detalles": "cualquier información adicional relevante"
 }
+
 Si no puedes extraer un campo, usa null.` }
             ]
           }]
@@ -1778,6 +1947,7 @@ export default function App() {
           inventario={inventario.datos}
           agregarMovInventario={agregarConToast(movInventario, "📦 Stock actualizado")}
           agregarProductoInventario={agregarConToast(inventario, "📦 Producto creado")}
+          trabajadores={trabajadores.datos}
         />;
       case "inventario":
         return <ModuloInventario
@@ -1802,6 +1972,7 @@ export default function App() {
         return <ModuloPersonal
           trabajadores={trabajadores.datos}
           agregarTrabajador={agregarConToast(trabajadores, "👷 Persona agregada")}
+          actualizarTrabajador={trabajadores.actualizar}
           eliminarTrabajador={trabajadores.eliminar}
           registros={registrosHH.datos}
           agregarRegistro={agregarConToast(registrosHH, "⏱ Horas registradas")}
