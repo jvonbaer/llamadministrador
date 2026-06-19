@@ -403,7 +403,198 @@ function Modal({ titulo, onClose, children }) {
 }
 
 // ─── MÓDULO DASHBOARD ─────────────────────────────────────────────────────────
-function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
+function exportarExcel({ finanzas, inventario, movInventario, tareas, trabajadores, registrosHH }) {
+  if (!window.XLSX) {
+    alert("No se pudo cargar el motor de Excel. Intenta de nuevo en unos segundos.");
+    return;
+  }
+  const wb = window.XLSX.utils.book_new();
+  const addSheet = (datos, nombre) => {
+    const hoja = window.XLSX.utils.json_to_sheet(datos && datos.length > 0 ? datos : [{ sin_datos: true }]);
+    window.XLSX.utils.book_append_sheet(wb, hoja, nombre);
+  };
+  addSheet(finanzas, "Finanzas");
+  addSheet(inventario, "Inventario");
+  addSheet(movInventario, "MovimientosInventario");
+  addSheet(tareas, "Tareas");
+  addSheet(trabajadores, "Trabajadores");
+  addSheet(registrosHH, "RegistrosHH");
+  const fechaArchivo = new Date().toISOString().slice(0, 10);
+  window.XLSX.writeFile(wb, `Llamadministrador_${fechaArchivo}.xlsx`);
+}
+
+function VistaInforme({ finanzas, inventario, movInventario, tareas, trabajadores, registrosHH, onVolver }) {
+  const [mesSel, setMesSel] = useState(new Date().toISOString().slice(0, 7));
+
+  const cambiarMes = (delta) => {
+    const [y, m] = mesSel.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setMesSel(d.toISOString().slice(0, 7));
+  };
+
+  const labelMesLargo = (ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleString("es-CL", { month: "long", year: "numeric" });
+  };
+
+  const mesAnteriorStr = (ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    const d = new Date(y, m - 2, 1);
+    return d.toISOString().slice(0, 7);
+  };
+
+  const movMes    = finanzas.filter(f => (f.fecha || "").startsWith(mesSel));
+  const movAnt    = finanzas.filter(f => (f.fecha || "").startsWith(mesAnteriorStr(mesSel)));
+  const suma      = (arr, tipo) => arr.filter(f => f.tipo === tipo).reduce((a, b) => a + Number(b.monto || 0), 0);
+  const ing = suma(movMes, "ingreso"); const gas = suma(movMes, "gasto"); const resultado = ing - gas;
+  const ingAnt = suma(movAnt, "ingreso"); const gasAnt = suma(movAnt, "gasto");
+  const varPct = (a, b) => b === 0 ? null : Math.round(((a - b) / b) * 100);
+
+  // Gastos por categoría y centro
+  const tabla = {};
+  movMes.filter(f => f.tipo === "gasto").forEach(f => {
+    const key = `${f.categoria || "Otro"}|${f.centro || "—"}`;
+    tabla[key] = (tabla[key] || 0) + Number(f.monto || 0);
+  });
+  const filasTabla = Object.entries(tabla)
+    .map(([key, val]) => { const [cat, centro] = key.split("|"); return { cat, centro, val }; })
+    .sort((a, b) => b.val - a.val);
+
+  // Personal del mes
+  const regsMes = registrosHH.filter(r => (r.fecha || "").startsWith(mesSel));
+  const hhTemporales = regsMes.reduce((a, b) => a + Number(b.horas || 0), 0);
+  const pagadoVariable = regsMes.reduce((a, b) => a + Number(b.jornal || 0), 0);
+  const liquidacionesFijas = movMes.filter(f => f.categoria === "Mano de obra").reduce((a, b) => a + Number(b.monto || 0), 0);
+
+  // Inventario
+  const movInvMes = movInventario.filter(m => (m.fecha || "").startsWith(mesSel));
+  const entradasMes = movInvMes.filter(m => m.tipo === "entrada").length;
+  const salidasMes  = movInvMes.filter(m => m.tipo === "salida").length;
+  const stockBajo   = inventario.filter(i => {
+    const stock = calcStock(i.id, movInventario);
+    return i.minimo && stock <= Number(i.minimo);
+  });
+
+  // Tareas del mes
+  const tareasCompletadasMes = tareas.filter(t => t.estado === "completada" && (t.fechaCreacion || t.fecha_creacion || "").startsWith(mesSel)).length;
+  const tareasPendActuales   = tareas.filter(t => t.estado !== "completada").length;
+
+  return (
+    <div>
+      <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <button onClick={onVolver} style={{ ...S.btnSecundario, padding: "6px 12px", fontSize: 13 }}>← Volver</button>
+        <h2 style={{ ...S.seccionTitulo, padding: 0, margin: 0, fontSize: 18 }}>Informe</h2>
+        <div style={{ width: 70 }} />
+      </div>
+
+      <div style={{ padding: "0 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={() => cambiarMes(-1)} style={{ ...S.btnSecundario, padding: "4px 10px" }}>‹</button>
+          <span style={{ fontSize: 14, fontWeight: 700, textTransform: "capitalize" }}>{labelMesLargo(mesSel)}</span>
+          <button onClick={() => cambiarMes(1)} style={{ ...S.btnSecundario, padding: "4px 10px" }}>›</button>
+        </div>
+        <button
+          onClick={() => exportarExcel({ finanzas, inventario, movInventario, tareas, trabajadores, registrosHH })}
+          style={{ ...S.btnPrimario, width: "auto", padding: "8px 14px", fontSize: 13 }}>
+          ⬇ Exportar a Excel
+        </button>
+      </div>
+
+      <div style={{ padding: "0 16px" }}>
+        {/* KPIs del mes */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+          <div style={{ background: "#eaf4e6", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: "#4A5E3A" }}>Ingresos</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#4A5E3A" }}>${fmt(ing)}</div>
+          </div>
+          <div style={{ background: "#fdecea", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: "#c0392b" }}>Gastos</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#c0392b" }}>${fmt(gas)}</div>
+          </div>
+          <div style={{ background: "#f5f0e8", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: "#3D2B1F" }}>Resultado</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: resultado >= 0 ? "#4A5E3A" : "#c0392b" }}>${fmt(resultado)}</div>
+          </div>
+          <div style={{ background: "#f5f0e8", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: "#3D2B1F" }}>vs mes anterior</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>
+              {varPct(gas, gasAnt) === null ? "—" : `${varPct(gas, gasAnt) > 0 ? "+" : ""}${varPct(gas, gasAnt)}%`}
+            </div>
+          </div>
+        </div>
+
+        {/* Tabla gastos por categoría y centro */}
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Gastos por categoría y centro de costo</div>
+          {filasTabla.length === 0 && <p style={{ color: "#aaa", fontSize: 13, textAlign: "center" }}>Sin gastos este mes.</p>}
+          {filasTabla.map((f, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #f0ece6", fontSize: 13 }}>
+              <span>{f.cat}</span>
+              <span style={{ color: "#888" }}>{CENTROS.find(c => c.id === f.centro)?.label || f.centro}</span>
+              <span style={{ fontWeight: 700, color: "#c0392b" }}>${fmt(f.val)}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Personal e Inventario lado a lado */}
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Personal</div>
+          <div style={{ fontSize: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>HH temporales</span><span>{hhTemporales.toFixed(1)} hrs</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Pagado variable (temporales)</span><span style={{ fontWeight: 700 }}>${fmt(pagadoVariable)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Liquidaciones / sueldos fijos</span><span style={{ fontWeight: 700 }}>${fmt(liquidacionesFijas)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Inventario</div>
+          <div style={{ fontSize: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Productos bajo mínimo</span>
+              <span style={{ fontWeight: 700, color: stockBajo.length > 0 ? "#c0392b" : "#4A5E3A" }}>{stockBajo.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Entradas del mes</span><span>{entradasMes}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Salidas del mes</span><span>{salidasMes}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardTitulo}>Tareas</div>
+          <div style={{ fontSize: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Completadas en {labelMesLargo(mesSel).split(" ")[0]}</span><span>{tareasCompletadasMes}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ color: "#888" }}>Pendientes actuales (todas)</span><span>{tareasPendActuales}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModuloDashboard({ finanzas, inventario, tareas, personal, movInventario, registrosHH }) {
+  const [vistaInforme, setVistaInforme] = useState(false);
+
+  if (vistaInforme) {
+    return <VistaInforme
+      finanzas={finanzas} inventario={inventario} movInventario={movInventario || []}
+      tareas={tareas} trabajadores={personal} registrosHH={registrosHH || []}
+      onVolver={() => setVistaInforme(false)}
+    />;
+  }
+
   const getMes = (off = 0) => {
     const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - off);
     return d.toISOString().slice(0, 7);
@@ -463,7 +654,12 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
 
   return (
     <div>
-      <p style={{ padding: "8px 16px 0", color: "#888", fontSize: 13, textTransform: "capitalize" }}>{mes}</p>
+      <div style={{ padding: "8px 16px 0", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <p style={{ color: "#888", fontSize: 13, textTransform: "capitalize", margin: 0 }}>{mes}</p>
+        <button onClick={() => setVistaInforme(true)} style={{ ...S.btnSecundario, padding: "6px 12px", fontSize: 12 }}>
+          📄 Ver informe completo
+        </button>
+      </div>
 
       <div style={S.kpiGrid}>
         <div style={S.kpiCard("#4A5E3A")}>
@@ -561,7 +757,6 @@ function ModuloDashboard({ finanzas, inventario, tareas, personal }) {
     </div>
   );
 }
-
 
 
 // ─── MÓDULO FINANZAS ──────────────────────────────────────────────────────────
@@ -1935,6 +2130,8 @@ export default function App() {
           inventario={inventario.datos}
           tareas={tareas.datos}
           personal={trabajadores.datos}
+          movInventario={movInventario.datos}
+          registrosHH={registrosHH.datos}
         />;
       case "finanzas":
         return <ModuloFinanzas
