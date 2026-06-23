@@ -1516,7 +1516,7 @@ function ModuloTareas({ datos, agregar, actualizar, eliminar, setDatos, inventar
 const TIPOS_TRABAJADOR = ["permanente", "temporal", "gerencial"];
 
 function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador, eliminarTrabajador,
-  registros, agregarRegistro, eliminarRegistro }) {
+  registros, agregarRegistro, eliminarRegistro, finanzas = [] }) {
   const [vista, setVista] = useState("equipo");
   const [modalTrabajador, setModalTrabajador] = useState(false);
   const [modalHH, setModalHH] = useState(false);
@@ -1597,6 +1597,18 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador,
     return { horas, pagado, dias: new Set(regs.map(r => r.fecha)).size, registros: regs };
   };
 
+  // Historial de liquidaciones desde Finanzas
+  const historialLiquidaciones = (trabajadorId) => {
+    const liq = finanzas.filter(f =>
+      f.trabajador_id === trabajadorId &&
+      f.categoria === "Mano de obra" &&
+      f.tipo === "gasto"
+    ).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+    const total = liq.reduce((a, b) => a + Number(b.monto || 0), 0);
+    const promedio = liq.length > 0 ? Math.round(total / liq.length) : 0;
+    return { liquidaciones: liq, total, promedio };
+  };
+
   const coloresTipo = { gerencial: "#C8852A", permanente: "#4A5E3A", temporal: "#888" };
 
   return (
@@ -1628,6 +1640,8 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador,
           {trabajadores.length === 0 && <p style={{ color: "#aaa", fontSize: 14, textAlign: "center" }}>Sin trabajadores.</p>}
           {trabajadores.map(t => {
             const r = resumenTrabajador(t.id);
+            const h = historialLiquidaciones(t.id);
+            const ultimaLiq = h.liquidaciones[0];
             return (
               <div key={t.id} style={{ ...S.listaItem, alignItems: "flex-start" }}>
                 <div style={{ flex: 1 }}>
@@ -1640,11 +1654,14 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador,
                       Este mes: {r.horas} hrs · {r.dias} día{r.dias !== 1 ? "s" : ""} · ${fmt(r.pagado)}
                     </div>
                   )}
+                  {ultimaLiq && (
+                    <div style={{ fontSize: 12, color: "#4A5E3A", marginTop: 2 }}>
+                      Última liq.: {ultimaLiq.fecha} · ${fmt(ultimaLiq.monto)}
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                     <button onClick={() => abrirEditarTrabajador(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>✏ Editar</button>
-                    {t.tipo === "temporal" && (
-                      <button onClick={() => setTrabajadorResumen(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>📊 Detalle</button>
-                    )}
+                    <button onClick={() => setTrabajadorResumen(t)} style={{ ...S.btnSecundario, padding: "4px 10px", fontSize: 12 }}>📊 Detalle</button>
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -1766,40 +1783,85 @@ function ModuloPersonal({ trabajadores, agregarTrabajador, actualizarTrabajador,
         </Modal>
       )}
 
-      {/* Modal resumen mensual de trabajador temporal */}
+      {/* Modal resumen / historial de trabajador */}
       {trabajadorResumen && (
-        <Modal titulo={`${trabajadorResumen.nombre} — ${new Date().toLocaleString("es-CL", { month: "long" })}`} onClose={() => setTrabajadorResumen(null)}>
+        <Modal titulo={trabajadorResumen.nombre} onClose={() => setTrabajadorResumen(null)}>
           {(() => {
+            const h = historialLiquidaciones(trabajadorResumen.id);
             const r = resumenTrabajador(trabajadorResumen.id);
+            const esTemporal = trabajadorResumen.tipo === "temporal";
             return (
               <>
-                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 800, color: "#3D2B1F" }}>{r.horas}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>horas</div>
-                  </div>
-                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 800, color: "#3D2B1F" }}>{r.dias}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>días</div>
-                  </div>
-                  <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 12, textAlign: "center" }}>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: "#C8852A" }}>${fmt(r.pagado)}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>total</div>
-                  </div>
+                {/* Resumen estadístico */}
+                <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+                  {h.liquidaciones.length > 0 && (
+                    <>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: "#3D2B1F" }}>{h.liquidaciones.length}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>liquidaciones</div>
+                      </div>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: "#C8852A" }}>${fmt(h.promedio)}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>promedio/mes</div>
+                      </div>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: "#4A5E3A" }}>${fmt(h.total)}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>total pagado</div>
+                      </div>
+                    </>
+                  )}
                 </div>
-                {r.registros.length === 0 && <p style={{ color: "#aaa", fontSize: 13, textAlign: "center" }}>Sin registros este mes.</p>}
-                {r.registros.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map(reg => (
-                  <div key={reg.id} style={{ ...S.listaItem, padding: "8px 0" }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{reg.fecha}</div>
-                      <div style={{ fontSize: 12, color: "#888" }}>{reg.actividad}</div>
+
+                {/* Historial de liquidaciones */}
+                {h.liquidaciones.length > 0 ? (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#3D2B1F", marginBottom: 8 }}>Historial de liquidaciones</div>
+                    {h.liquidaciones.map(liq => (
+                      <div key={liq.id} style={{ ...S.listaItem, padding: "8px 0" }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{liq.fecha}</div>
+                          <div style={{ fontSize: 12, color: "#888" }}>{liq.descripcion || liq.proveedor || "Liquidación"}</div>
+                        </div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#C8852A" }}>${fmt(liq.monto)}</div>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <p style={{ color: "#aaa", fontSize: 13, textAlign: "center" }}>Sin liquidaciones registradas.</p>
+                )}
+
+                {/* HH para temporales */}
+                {esTemporal && r.horas > 0 && (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#3D2B1F", margin: "14px 0 8px" }}>HH este mes</div>
+                    <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: "#3D2B1F" }}>{r.horas}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>horas</div>
+                      </div>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: "#3D2B1F" }}>{r.dias}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>días</div>
+                      </div>
+                      <div style={{ flex: 1, background: "#f5f0e8", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: "#C8852A" }}>${fmt(r.pagado)}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>total</div>
+                      </div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>{reg.horas} hrs</div>
-                      <div style={{ fontSize: 12, color: "#C8852A" }}>${fmt(reg.jornal || 0)}</div>
-                    </div>
-                  </div>
-                ))}
+                    {r.registros.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map(reg => (
+                      <div key={reg.id} style={{ ...S.listaItem, padding: "8px 0" }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{reg.fecha}</div>
+                          <div style={{ fontSize: 12, color: "#888" }}>{reg.actividad}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{reg.horas} hrs</div>
+                          <div style={{ fontSize: 12, color: "#C8852A" }}>${fmt(reg.jornal || 0)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
               </>
             );
           })()}
@@ -2174,6 +2236,7 @@ export default function App() {
           registros={registrosHH.datos}
           agregarRegistro={agregarConToast(registrosHH, "⏱ Horas registradas")}
           eliminarRegistro={registrosHH.eliminar}
+          finanzas={finanzas.datos}
         />;
       case "escaner":
         return <ModuloEscaner onExtraer={handleExtraccion} />;
